@@ -64,14 +64,14 @@ resource "google_service_account" "gcf_trigger_sa" {
 # ==============================================================================
 # 3. IAM Bindings
 # ==============================================================================
-# Perms for Runner
+# Spoke project access for deployments
 resource "google_project_iam_member" "spoke_project_access" {
   project = var.spoke_project
   role    = "roles/editor"
   member  = "serviceAccount:${google_service_account.github_runner_sa.email}"
 }
 
-# Perms for Cloud Function
+# Hub project permissions for Cloud Function
 resource "google_secret_manager_secret_iam_member" "gcf_pat_accessor" {
   project    = var.hub_project
   secret_id  = "github-pat"
@@ -108,8 +108,6 @@ resource "google_storage_bucket" "function_source_bucket" {
   uniform_bucket_level_access = true
 }
 
-# Note: In a real CI/CD pipeline, the zip would be created by the build system.
-# For local terraform use, we point to the cloud_function directory.
 data "archive_file" "function_source_zip" {
   type        = "zip"
   source_dir  = "${path.module}/../cloud_function"
@@ -153,6 +151,7 @@ resource "google_cloudfunctions2_function" "github_trigger_function" {
       PAT_SECRET_ID     = "github-pat"
       WEBHOOK_SECRET_ID = "github-webhook-secret"
       TEMPLATE_PREFIX   = "github-spot-runner-"
+      LOG_EXECUTION_ID  = "true" # Matches current GCP setting
     }
     ingress_settings               = "ALLOW_ALL"
     all_traffic_on_latest_revision = true
@@ -202,7 +201,7 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
   }
 
   disk {
-    # Using the optimized image we built!
+    # Points to the optimized image with pre-pulled Docker layers
     source_image = "projects/${var.hub_project}/global/images/github-runner-base-v3"
     disk_size_gb = 50
     auto_delete  = true
@@ -210,7 +209,9 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
 
   network_interface {
     network = "default"
-    access_config {}
+    access_config {
+      network_tier = "PREMIUM"
+    }
   }
 
   service_account {
@@ -220,8 +221,11 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
 
   metadata = {
     serial-port-logging-enable = "true"
-    # VERSION CONTROL: This script is now part of the repo!
-    startup-script = file("${path.module}/runner_startup.sh")
+    startup-script             = file("${path.module}/runner_startup.sh")
+  }
+
+  labels = {
+    goog-terraform-provisioned = "true"
   }
 
   lifecycle {
