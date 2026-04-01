@@ -1,0 +1,8 @@
+# For making HTTP requests to the GitHub API
+requests
+
+# For interacting with the GCP Compute Engine API
+google-cloud-compute
+
+# For securely accessing the GitHub PAT from Secret Manager
+google-cloud-secret-manager
