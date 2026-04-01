@@ -195,9 +195,13 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
   region       = var.region
 
   scheduling {
-    preemptible       = false
-    automatic_restart = false
-    provisioning_model = "STANDARD"
+    preemptible                 = false
+    automatic_restart           = false
+    provisioning_model          = "STANDARD"
+    instance_termination_action = "DELETE"
+    max_run_duration {
+      seconds = 1800
+    }
   }
 
   disk {
