@@ -9,13 +9,14 @@ import time
 from google.cloud import compute_v1
 from google.cloud import secretmanager
 
-# --- Configuration ---
+# --- Configuration (Passed from Terraform Environment Variables) ---
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "global-actions-runner")
 GCP_ZONE = os.environ.get("GCP_ZONE", "us-central1-a")
 
-PAT_SECRET_ID = "github-pat"
-WEBHOOK_SECRET_ID = "github-webhook-secret" # Secret containing the webhook secret
-TEMPLATE_PREFIX = "github-spot-runner-"
+# The IDs of the secrets in Secret Manager
+PAT_SECRET_ID = os.environ.get("PAT_SECRET_ID", "github-pat")
+WEBHOOK_SECRET_ID = os.environ.get("WEBHOOK_SECRET_ID", "github-webhook-secret")
+TEMPLATE_PREFIX = os.environ.get("TEMPLATE_PREFIX", "github-spot-runner-")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -77,7 +78,6 @@ def github_webhook_handler(request):
 
         if not hmac.compare_digest(expected_signature, signature_header):
             print("ERROR: Request signature does not match expected signature.")
-            # Note: During initial setup, ensure GitHub and GCP secrets match.
             return ("Forbidden", 403)
     except Exception as e:
         print(f"ERROR: Error during signature verification: {e}")
