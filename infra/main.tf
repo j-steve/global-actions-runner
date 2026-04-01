@@ -210,7 +210,7 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
   network_interface {
     network = "default"
     access_config {
-      network_tier = "PREMIUM"
+      network_tier = "STANDARD"
     }
   }
 
