@@ -5,13 +5,16 @@ import hmac
 import hashlib
 import json
 import time
+import random
 
 from google.cloud import compute_v1
 from google.cloud import secretmanager
 
 # --- Configuration (Passed from Terraform Environment Variables) ---
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "global-actions-runner")
-GCP_ZONE = os.environ.get("GCP_ZONE", "us-central1-a")
+GCP_REGION = os.environ.get("GCP_REGION", "us-central1")
+# Default zone if region logic fails
+DEFAULT_ZONE = os.environ.get("GCP_ZONE", f"{GCP_REGION}-a")
 
 # The IDs of the secrets in Secret Manager
 PAT_SECRET_ID = os.environ.get("PAT_SECRET_ID", "github-pat")
@@ -54,6 +57,16 @@ def _get_latest_template(project_id: str, prefix: str) -> compute_v1.InstanceTem
     except Exception as e:
         print(f"ERROR: Error finding latest instance template with prefix '{prefix}': {e}")
         raise
+
+def _get_random_zone(region: str) -> str:
+    """Returns a random zone for the given region."""
+    # Common zones for us-central1 and us-west1
+    zones = {
+        "us-central1": ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"],
+        "us-west1": ["us-west1-a", "us-west1-b", "us-west1-c"]
+    }
+    region_zones = zones.get(region, [f"{region}-a"])
+    return random.choice(region_zones)
 
 
 def github_webhook_handler(request):
@@ -122,7 +135,7 @@ def github_webhook_handler(request):
         # 4. Find the latest instance template
         template = _get_latest_template(GCP_PROJECT, TEMPLATE_PREFIX)
 
-        # 5. Spin up the Spot VM
+        # 5. Spin up the VM with Retries
         instance_client = compute_v1.InstancesClient()
 
         # Merge metadata from the template with our new items
@@ -137,19 +150,36 @@ def github_webhook_handler(request):
         instance_resource.name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
         instance_resource.metadata = compute_v1.Metadata(items=new_metadata_items)
 
-        request_insert = compute_v1.InsertInstanceRequest(
-            project=GCP_PROJECT,
-            zone=GCP_ZONE,
-            source_instance_template=template.self_link,
-            instance_resource=instance_resource,
-        )
+        max_retries = 3
+        last_error = None
         
-        print(f"INFO: Requesting provisioning of instance '{instance_resource.name}' using template '{template.name}'...")
-        instance_client.insert(request=request_insert)
-        print(f"INFO: Successfully requested provisioning of instance '{instance_resource.name}'.")
+        for attempt in range(1, max_retries + 1):
+            selected_zone = _get_random_zone(GCP_REGION)
+            print(f"INFO: Attempt {attempt}: Provisioning instance '{instance_resource.name}' in zone '{selected_zone}'...")
+            
+            try:
+                request_insert = compute_v1.InsertInstanceRequest(
+                    project=GCP_PROJECT,
+                    zone=selected_zone,
+                    source_instance_template=template.self_link,
+                    instance_resource=instance_resource,
+                )
+                
+                operation = instance_client.insert(request=request_insert)
+                # We don't necessarily need to wait for completion here if we want to return 200 fast,
+                # but we should at least catch immediate API errors.
+                print(f"INFO: Successfully requested provisioning in {selected_zone}. Operation: {operation.name}")
+                return ("Successfully provisioned VM", 200)
+                
+            except Exception as e:
+                print(f"WARNING: Attempt {attempt} failed in {selected_zone}: {e}")
+                last_error = e
+                if attempt < max_retries:
+                    time.sleep(2) # Brief pause before retry
+                continue
+
+        raise last_error # Re-raise if all retries fail
 
     except Exception as e:
-        print(f"ERROR: Failed to provision runner for job {job_id}: {e}")
+        print(f"ERROR: Failed to provision runner for job {job_id} after {max_retries} attempts: {e}")
         return ("Error processing request", 500)
-
-    return ("Successfully provisioned VM", 200)

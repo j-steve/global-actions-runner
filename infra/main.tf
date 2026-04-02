@@ -147,7 +147,7 @@ resource "google_cloudfunctions2_function" "github_trigger_function" {
     service_account_email = google_service_account.gcf_trigger_sa.email
     environment_variables = {
       GCP_PROJECT       = var.hub_project
-      GCP_ZONE          = "${var.region}-a"
+      GCP_REGION        = var.region
       PAT_SECRET_ID     = "github-pat"
       WEBHOOK_SECRET_ID = "github-webhook-secret"
       TEMPLATE_PREFIX   = "github-spot-runner-"
