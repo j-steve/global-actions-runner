@@ -206,7 +206,7 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
 
   disk {
     # Points to the optimized image with pre-pulled Docker layers
-    source_image = "projects/${var.hub_project}/global/images/github-runner-base-v3"
+    source_image = "projects/${var.hub_project}/global/images/github-runner-base-v4"
     disk_size_gb = 50
     auto_delete  = true
   }
