@@ -92,6 +92,12 @@ resource "google_project_iam_member" "gcf_compute_admin" {
   member     = "serviceAccount:${google_service_account.gcf_trigger_sa.email}"
 }
 
+resource "google_project_iam_member" "runner_compute_admin" {
+  project    = var.hub_project
+  role       = "roles/compute.instanceAdmin.v1"
+  member     = "serviceAccount:${google_service_account.github_runner_sa.email}"
+}
+
 resource "google_service_account_iam_member" "gcf_sa_user" {
   service_account_id = google_service_account.github_runner_sa.name
   role               = "roles/iam.serviceAccountUser"
@@ -195,9 +201,9 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
   region       = var.region
 
   scheduling {
-    preemptible                 = false
+    preemptible                 = true
     automatic_restart           = false
-    provisioning_model          = "STANDARD"
+    provisioning_model          = "SPOT"
     instance_termination_action = "DELETE"
     max_run_duration {
       seconds = 1800
