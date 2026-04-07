@@ -112,15 +112,21 @@ def github_webhook_handler(request):
     
     # Identify which instance to delete
     # 1. Check if GitHub told us which runner ran the job
-    runner_name = payload["workflow_job"].get("runner_name")
-    if runner_name and runner_name.startswith("gh-runner-"):
-        instance_name = runner_name.lower()
+    runner_name_from_payload = payload["workflow_job"].get("runner_name")
+    if runner_name_from_payload and runner_name_from_payload.startswith("gh-runner-"):
+        instance_name = runner_name_from_payload.lower()
     else:
         # Fallback to the name we would have given it
         instance_name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
 
     if action == "completed":
         print(f"INFO: Job '{job_id}' completed. Attempting to delete instance '{instance_name}'...")
+        
+        # STRICT CHECK: Only delete if GitHub actually says THIS runner ran THIS job.
+        if runner_name_from_payload and runner_name_from_payload.lower() != instance_name:
+            print(f"WARNING: Job {job_id} reported completion on runner '{runner_name_from_payload}', but we were about to delete '{instance_name}'. Aborting deletion to prevent hijacking.")
+            return ("Aborted deletion due to name mismatch", 200)
+            
         instance_client = compute_v1.InstancesClient()
         
         # We don't know the zone, so we try all zones in the region
