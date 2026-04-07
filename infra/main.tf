@@ -213,7 +213,7 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
     provisioning_model          = "STANDARD"
     instance_termination_action = "DELETE"
     max_run_duration {
-      seconds = 1800
+      seconds = 7200
     }
   }
 
