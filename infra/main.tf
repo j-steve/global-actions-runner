@@ -107,6 +107,13 @@ resource "google_service_account_iam_member" "gcf_sa_user" {
 # ==============================================================================
 # 4. Cloud Function Source Code
 # ==============================================================================
+resource "google_secret_manager_secret_iam_member" "runner_pat_accessor" {
+  project    = var.hub_project
+  secret_id  = "github-pat"
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.github_runner_sa.email}"
+}
+
 resource "google_storage_bucket" "function_source_bucket" {
   project                     = var.hub_project
   name                        = local.function_source_bucket_name

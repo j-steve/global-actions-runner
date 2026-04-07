@@ -109,7 +109,15 @@ def github_webhook_handler(request):
     repo_full_name = payload["repository"]["full_name"]
     repo_url = payload["repository"]["html_url"]
     job_id = payload["workflow_job"]["id"]
-    instance_name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
+    
+    # Identify which instance to delete
+    # 1. Check if GitHub told us which runner ran the job
+    runner_name = payload["workflow_job"].get("runner_name")
+    if runner_name and runner_name.startswith("gh-runner-"):
+        instance_name = runner_name.lower()
+    else:
+        # Fallback to the name we would have given it
+        instance_name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
 
     if action == "completed":
         print(f"INFO: Job '{job_id}' completed. Attempting to delete instance '{instance_name}'...")
@@ -137,6 +145,12 @@ def github_webhook_handler(request):
 
     if action != "queued":
         print(f"INFO: Ignoring action '{action}'.")
+        return ("Ignoring request", 200)
+    
+    # 2.5 Filter by label
+    labels = payload["workflow_job"].get("labels", [])
+    if "gcp-spot-runner" not in labels:
+        print(f"INFO: Ignoring queued job '{job_id}', does not request 'gcp-spot-runner' label (labels: {labels}).")
         return ("Ignoring request", 200)
     
     print(f"INFO: Received queued job '{job_id}' for repo '{repo_full_name}'.")
