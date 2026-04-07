@@ -10,6 +10,16 @@ echo 'export GOOGLE_CLOUD_LOCATION="global"' >> ~/.bashrc
 echo 'export GOOGLE_GENAI_USE_VERTEXAI=true' >> ~/.bashrc
 source ~/.bashrc
 
+# Setup Gemini CLI settings.
+mkdir -p ~/.gemini
+cat <<EOF > ~/.gemini/settings.json
+{
+  "model": {
+    "name": "gemini-3-flash-preview"
+  }
+}
+EOF
+
 # Enable TMUX scrolling.
 echo "set -g mouse on" >> ~/.tmux.conf
 tmux source-file ~/.tmux.conf
