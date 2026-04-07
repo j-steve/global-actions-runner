@@ -206,10 +206,11 @@ def github_webhook_handler(request):
         instance_resource.name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
         instance_resource.metadata = compute_v1.Metadata(items=new_metadata_items)
         
-        # Override template to use STANDARD instead of SPOT for higher reliability
+        # Force STANDARD provisioning model
         instance_resource.scheduling = compute_v1.Scheduling(
             provisioning_model="STANDARD",
-            preemptible=False
+            preemptible=False,
+            automatic_restart=False
         )
 
         # 5. Spin up the VM - Iterate through zones on failure
@@ -219,6 +220,9 @@ def github_webhook_handler(request):
         
         last_error = None
         for selected_zone in zones:
+            # Update machine type for the current zone
+            # n2-standard-2 often has better availability than e2 during shortages
+            instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/n2-standard-2"
             print(f"INFO: Attempting to provision instance '{instance_resource.name}' in zone '{selected_zone}'...")
             
             try:
