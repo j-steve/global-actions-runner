@@ -25,6 +25,9 @@ echo "--- Running ---"
 sudo -u runner ./run.sh
 
 # 5. Normal Finish
+echo "--- Sleeping to ensure final status is flushed to GitHub ---"
+sleep 30
+
 echo "--- Shutting Down and Deleting Self ---"
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
 INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
