@@ -8,7 +8,7 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
 2.  **Cloud Function (`cloud_function/`)**:
     *   **On `queued`**: 
         *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label.
-        *   **Smart Provisioning**: Checks if any existing runners are already `online` and `idle`. If an idle runner is available, it skips provisioning a new VM, allowing the existing one to pick up the job.
+        *   **Capacity-Aware Provisioning**: Prevents redundant VM spawns. It checks the number of existing GCE instances against the number of *busy* runners in GitHub. If `Total Instances > Busy Runners`, it assumes a VM is either idle or currently booting and will pick up the queued job, so it skips starting a new one.
     *   **On `completed`**: Does **not** aggressively delete the VM. It allows the VM to stay up and potentially pick up more jobs from the queue.
 3.  **Compute Engine VM (`infra/runner_startup.sh`)**:
     *   **Persistent Runner**: The runner is configured without the `--ephemeral` flag, so it stays registered after completing a job.

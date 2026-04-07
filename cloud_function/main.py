@@ -144,21 +144,36 @@ def github_webhook_handler(request):
             "Accept": "application/vnd.github.v3+json",
         }
 
-        # 3.5 Check for idle runners before provisioning
+        # 3.5 Check for existing capacity before provisioning
         try:
+            # 1. Get GCE instance count
+            instance_client = compute_v1.InstancesClient()
+            # We check all zones to be sure
+            zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
+            total_gce_instances = 0
+            for zone in zones:
+                instance_list = instance_client.list(project=GCP_PROJECT, zone=zone)
+                # Count instances matching our prefix
+                total_gce_instances += sum(1 for i in instance_list if i.name.startswith("gh-runner-"))
+            
+            # 2. Get GitHub busy count
             runners_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners"
             runners_resp = requests.get(runners_url, headers=headers)
+            busy_runners = 0
             if runners_resp.status_code == 200:
                 runners = runners_resp.json().get("runners", [])
-                idle_runners = [r for t in runners if (r := t) and t.get("status") == "online" and t.get("busy") == False]
-                # Filter idle runners to only those with our label
-                matching_idle = [r for r in idle_runners if any(l.get("name") == "gcp-spot-runner" for l in r.get("labels", []))]
+                # Only count online runners that have our label
+                matching_online = [r for r in runners if r.get("status") == "online" and any(l.get("name") == "gcp-spot-runner" for l in r.get("labels", []))]
+                busy_runners = sum(1 for r in matching_online if r.get("busy") == True)
+            
+            print(f"INFO: Capacity Check - GCE Instances: {total_gce_instances}, Busy Runners in GitHub: {busy_runners}")
+            
+            if total_gce_instances > busy_runners:
+                print(f"INFO: Existing capacity detected ({total_gce_instances - busy_runners} available/booting). Skipping VM provisioning for job {job_id}.")
+                return ("Capacity available", 200)
                 
-                if matching_idle:
-                    print(f"INFO: Found {len(matching_idle)} idle runner(s). Skipping VM provisioning for job {job_id}.")
-                    return ("Idle runner available", 200)
         except Exception as e:
-            print(f"WARNING: Failed to check for idle runners: {e}. Proceeding with provisioning.")
+            print(f"WARNING: Failed capacity check: {e}. Proceeding with default provisioning logic.")
 
         api_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/registration-token"
         
