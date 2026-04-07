@@ -6,8 +6,10 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
 
 1.  **GitHub Webhook**: GitHub is configured to send `workflow_job` events to the Cloud Function URL.
 2.  **Cloud Function (`cloud_function/`)**:
-    *   **On `queued`**: Fetches a registration token from GitHub, selects a random zone, and creates a GCE VM using a pre-built instance template.
-    *   **On `completed`**: Identifies the VM associated with the job and deletes it.
+    *   **On `queued`**: 
+        *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label. Other jobs (like those for `ubuntu-latest`) are ignored.
+        *   **Provisioning**: Fetches a registration token from GitHub, selects a random zone, and creates a GCE VM using a pre-built instance template.
+    *   **On `completed`**: Identifies the VM associated with the job using the `runner_name` provided by GitHub and deletes it.
 3.  **Compute Engine VM (`infra/runner_startup.sh`)**:
     *   Runs a startup script that fetches metadata, configures the ephemeral runner, and executes the job.
     *   **Standard Instances**: Uses `STANDARD` instances (not Spot) for maximum reliability and to avoid preemption during critical jobs.
@@ -27,6 +29,18 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
 *   GitHub Personal Access Token (PAT) with `repo` scope (stored in Secret Manager as `github-pat`).
 *   GitHub Webhook Secret (stored in Secret Manager as `github-webhook-secret`).
 
+### Usage
+To use these runners in your GitHub Action workflows, specify the following label in your `runs-on` field:
+
+```yaml
+jobs:
+  my-job:
+    runs-on: [self-hosted, gcp-spot-runner]
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Running on GCP!"
+```
+
 ### Infrastructure Deployment
 1.  Navigate to the `infra/` directory.
 2.  Initialize Terraform: `terraform init`.
@@ -41,10 +55,10 @@ The runners use a custom base image (`github-runner-base-v4`) pre-loaded with Do
 ## Maintenance & Cleanup
 
 The system is designed to be "zero-maintenance" regarding dead VMs. Cleanup happens via two redundant paths:
-1.  **Webhook Path**: Cloud Function deletes the VM when GitHub sends a `completed` action.
+1.  **Webhook Path**: Cloud Function deletes the VM when GitHub sends a `completed` action. It reliably identifies the correct VM using the `runner_name`.
 2.  **Self-Delete Path**: The VM runs `gcloud compute instances delete` as its final command.
 
-Both service accounts (`gcf-github-trigger-sa` and `github-runner-sa`) have `roles/compute.instanceAdmin.v1` permissions in the hub project to facilitate this.
+Both service accounts (`gcf-github-trigger-sa` and `github-runner-sa`) have `roles/compute.instanceAdmin.v1` and `roles/secretmanager.secretAccessor` permissions in the hub project to facilitate registration and cleanup.
 
 ## Security
 *   **No Persistent Access**: Runners are ephemeral and use short-lived tokens.
