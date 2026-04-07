@@ -7,14 +7,14 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
 1.  **GitHub Webhook**: GitHub is configured to send `workflow_job` events to the Cloud Function URL.
 2.  **Cloud Function (`cloud_function/`)**:
     *   **On `queued`**: 
-        *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label. Other jobs (like those for `ubuntu-latest`) are ignored.
-        *   **Provisioning**: Fetches a registration token from GitHub, selects a random zone, and creates a GCE VM using a pre-built instance template.
-    *   **On `completed`**: Identifies the VM associated with the job using the `runner_name` provided by GitHub and deletes it.
+        *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label.
+        *   **Smart Provisioning**: Checks if any existing runners are already `online` and `idle`. If an idle runner is available, it skips provisioning a new VM, allowing the existing one to pick up the job.
+    *   **On `completed`**: Does **not** aggressively delete the VM. It allows the VM to stay up and potentially pick up more jobs from the queue.
 3.  **Compute Engine VM (`infra/runner_startup.sh`)**:
-    *   Runs a startup script that fetches metadata, configures the ephemeral runner, and executes the job.
-    *   **Standard Instances**: Uses `STANDARD` instances (not Spot) for maximum reliability and to avoid preemption during critical jobs.
-    *   **Self-Deletion**: After the job completes, the VM attempts to delete itself via the Google Cloud CLI as a fallback to the Cloud Function's deletion logic.
-4.  **Artifact Registry**: Includes a Docker Hub pull-through cache to speed up image pulls and avoid rate limits.
+    *   **Persistent Runner**: The runner is configured without the `--ephemeral` flag, so it stays registered after completing a job.
+    *   **Idle Monitor**: Runs a background loop that monitors for the `Runner.Worker` process. If the runner remains idle (no job running) for **10 consecutive minutes**, the VM automatically deletes itself.
+    *   **Standard Instances**: Uses `STANDARD` instances for maximum reliability.
+4.  **Artifact Registry**: Includes a Docker Hub pull-through cache to speed up image pulls.
 
 ## Project Structure
 
@@ -54,11 +54,11 @@ The runners use a custom base image (`github-runner-base-v4`) pre-loaded with Do
 
 ## Maintenance & Cleanup
 
-The system is designed to be "zero-maintenance" regarding dead VMs. Cleanup happens via two redundant paths:
-1.  **Webhook Path**: Cloud Function deletes the VM when GitHub sends a `completed` action. It reliably identifies the correct VM using the `runner_name`.
-2.  **Self-Delete Path**: The VM runs `gcloud compute instances delete` as its final command.
+The system is designed to be "zero-maintenance" regarding dead VMs. Cleanup is handled by the **Idle Monitor** running on the VM:
+1.  **Idle Detection**: The VM checks every minute if a job is running.
+2.  **Self-Deletion**: If it remains idle for 10 minutes, it runs `gcloud compute instances delete` to terminate itself.
 
-Both service accounts (`gcf-github-trigger-sa` and `github-runner-sa`) have `roles/compute.instanceAdmin.v1` and `roles/secretmanager.secretAccessor` permissions in the hub project to facilitate registration and cleanup.
+This approach ensures that VMs stay alive to process back-to-back jobs (saving provisioning time) but eventually clean themselves up to save costs when the queue is empty. Both service accounts have the necessary permissions to facilitate this.
 
 ## Security
 *   **No Persistent Access**: Runners are ephemeral and use short-lived tokens.

@@ -120,34 +120,8 @@ def github_webhook_handler(request):
         instance_name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
 
     if action == "completed":
-        print(f"INFO: Job '{job_id}' completed. Attempting to delete instance '{instance_name}'...")
-        
-        # STRICT CHECK: Only delete if GitHub actually says THIS runner ran THIS job.
-        if runner_name_from_payload and runner_name_from_payload.lower() != instance_name:
-            print(f"WARNING: Job {job_id} reported completion on runner '{runner_name_from_payload}', but we were about to delete '{instance_name}'. Aborting deletion to prevent hijacking.")
-            return ("Aborted deletion due to name mismatch", 200)
-            
-        instance_client = compute_v1.InstancesClient()
-        
-        # We don't know the zone, so we try all zones in the region
-        zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
-        deleted = False
-        for zone in zones:
-            try:
-                # Check if instance exists in this zone first to avoid unnecessary delete requests
-                instance_client.get(project=GCP_PROJECT, zone=zone, instance=instance_name)
-                print(f"INFO: Found instance '{instance_name}' in zone '{zone}'. Deleting...")
-                operation = instance_client.delete(project=GCP_PROJECT, zone=zone, instance=instance_name)
-                print(f"INFO: Successfully requested deletion in {zone}. Operation: {operation.name}")
-                deleted = True
-                break
-            except Exception:
-                continue
-        
-        if not deleted:
-            print(f"WARNING: Could not find instance '{instance_name}' in any searched zones.")
-        
-        return ("Processed completion", 200)
+        print(f"INFO: Job '{job_id}' completed. Skipping aggressive deletion; VM will self-delete when idle.")
+        return ("Skipping deletion, VM handles itself", 200)
 
     if action != "queued":
         print(f"INFO: Ignoring action '{action}'.")
@@ -169,6 +143,23 @@ def github_webhook_handler(request):
             "Authorization": f"token {github_pat}",
             "Accept": "application/vnd.github.v3+json",
         }
+
+        # 3.5 Check for idle runners before provisioning
+        try:
+            runners_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners"
+            runners_resp = requests.get(runners_url, headers=headers)
+            if runners_resp.status_code == 200:
+                runners = runners_resp.json().get("runners", [])
+                idle_runners = [r for t in runners if (r := t) and t.get("status") == "online" and t.get("busy") == False]
+                # Filter idle runners to only those with our label
+                matching_idle = [r for r in idle_runners if any(l.get("name") == "gcp-spot-runner" for l in r.get("labels", []))]
+                
+                if matching_idle:
+                    print(f"INFO: Found {len(matching_idle)} idle runner(s). Skipping VM provisioning for job {job_id}.")
+                    return ("Idle runner available", 200)
+        except Exception as e:
+            print(f"WARNING: Failed to check for idle runners: {e}. Proceeding with provisioning.")
+
         api_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/registration-token"
         
         resp = requests.post(api_url, headers=headers)
