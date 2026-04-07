@@ -205,6 +205,12 @@ def github_webhook_handler(request):
         instance_resource = compute_v1.Instance()
         instance_resource.name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
         instance_resource.metadata = compute_v1.Metadata(items=new_metadata_items)
+        
+        # Override template to use STANDARD instead of SPOT for higher reliability
+        instance_resource.scheduling = compute_v1.Scheduling(
+            provisioning_model="STANDARD",
+            preemptible=False
+        )
 
         # 5. Spin up the VM - Iterate through zones on failure
         instance_client = compute_v1.InstancesClient()
