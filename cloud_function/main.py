@@ -206,12 +206,14 @@ def github_webhook_handler(request):
         instance_resource.name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
         instance_resource.metadata = compute_v1.Metadata(items=new_metadata_items)
 
-        max_retries = 3
-        last_error = None
+        # 5. Spin up the VM - Iterate through zones on failure
+        instance_client = compute_v1.InstancesClient()
+        zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
+        random.shuffle(zones) # Start with a random zone to spread load
         
-        for attempt in range(1, max_retries + 1):
-            selected_zone = _get_random_zone(GCP_REGION)
-            print(f"INFO: Attempt {attempt}: Provisioning instance '{instance_resource.name}' in zone '{selected_zone}'...")
+        last_error = None
+        for selected_zone in zones:
+            print(f"INFO: Attempting to provision instance '{instance_resource.name}' in zone '{selected_zone}'...")
             
             try:
                 request_insert = compute_v1.InsertInstanceRequest(
@@ -222,20 +224,31 @@ def github_webhook_handler(request):
                 )
                 
                 operation = instance_client.insert(request=request_insert)
-                # We don't necessarily need to wait for completion here if we want to return 200 fast,
-                # but we should at least catch immediate API errors.
-                print(f"INFO: Successfully requested provisioning in {selected_zone}. Operation: {operation.name}")
-                return ("Successfully provisioned VM", 200)
+                
+                # Wait briefly to see if the operation fails immediately (e.g. resource exhaustion)
+                # We don't want to wait for the whole thing, but a 2-3 second check catches most common errors.
+                # Actually, calling .result() with a short timeout is effective.
+                try:
+                    operation.result(timeout=5)
+                    print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
+                    return ("Successfully provisioned VM", 200)
+                except Exception as e:
+                    # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
+                    if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
+                        print(f"INFO: Provisioning request accepted in {selected_zone}, proceeding asynchronously. Operation: {operation.name}")
+                        return ("Successfully requested provisioning", 200)
+                    # Otherwise, it's a real error (like Resource Exhausted)
+                    print(f"WARNING: Provisioning failed in {selected_zone}: {e}")
+                    last_error = e
+                    continue
                 
             except Exception as e:
-                print(f"WARNING: Attempt {attempt} failed in {selected_zone}: {e}")
+                print(f"WARNING: Request failed in {selected_zone}: {e}")
                 last_error = e
-                if attempt < max_retries:
-                    time.sleep(2) # Brief pause before retry
                 continue
 
-        raise last_error # Re-raise if all retries fail
+        raise last_error if last_error else RuntimeError("Failed to provision in any zone.")
 
     except Exception as e:
-        print(f"ERROR: Failed to provision runner for job {job_id} after {max_retries} attempts: {e}")
+        print(f"ERROR: Failed to provision runner for job {job_id}: {e}")
         return ("Error processing request", 500)
