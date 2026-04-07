@@ -231,15 +231,16 @@ def github_webhook_handler(request):
                 
                 operation = instance_client.insert(request=request_insert)
                 
-                # Wait up to 60s to catch immediate or near-immediate failures (like resource exhaustion)
+                # Wait up to 120s to catch immediate or near-immediate failures (like resource exhaustion)
+                # GCP is being extremely slow reporting exhausted zones today.
                 try:
-                    operation.result(timeout=60)
+                    operation.result(timeout=120)
                     print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
                     return ("Successfully provisioned VM", 200)
                 except Exception as e:
                     # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
                     if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
-                        print(f"INFO: Provisioning request still pending in {selected_zone} after 60s, proceeding asynchronously. Operation: {operation.name}")
+                        print(f"INFO: Provisioning request still pending in {selected_zone} after 120s, proceeding asynchronously. Operation: {operation.name}")
                         return ("Successfully requested provisioning", 200)
                     # Otherwise, it's a real error (like Resource Exhausted)
                     print(f"WARNING: Provisioning failed in {selected_zone}: {e}")

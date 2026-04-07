@@ -156,7 +156,7 @@ resource "google_cloudfunctions2_function" "github_trigger_function" {
     max_instance_count = 5
     min_instance_count = 0
     available_memory   = "256Mi"
-    timeout_seconds    = 300
+    timeout_seconds    = 540
     service_account_email = google_service_account.gcf_trigger_sa.email
     environment_variables = {
       GCP_PROJECT       = var.hub_project
