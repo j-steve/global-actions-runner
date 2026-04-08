@@ -205,7 +205,6 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
   project      = var.hub_project
   name_prefix  = "github-spot-runner-"
   machine_type = "e2-medium"
-  region       = var.region
 
   scheduling {
     preemptible                 = false

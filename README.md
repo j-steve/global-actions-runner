@@ -8,8 +8,8 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
 2.  **Cloud Function (`cloud_function/`)**:
     *   **On `queued`**: 
         *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label.
-        *   **Capacity-Aware Provisioning**: Prevents redundant VM spawns. It checks the number of existing GCE instances against the number of *busy* runners in GitHub. If `Total Instances > Busy Runners`, it assumes a VM is either idle or currently booting and will pick up the queued job, so it skips starting a new one.
-        *   **Relentless Hunter**: If no capacity exists, the function enters a **9-minute loop** (hunting round). It shuffles and iterates through all available zones, retrying every 30 seconds if all zones are full (`ZONE_RESOURCE_POOL_EXHAUSTED`). This ensures that short-term capacity dips don't cause permanent build failures.
+        *   **Global Capacity-Aware Provisioning**: Prevents redundant VM spawns. It checks the number of existing GCE instances across **all supported regions** against the number of *busy* runners in GitHub. If `Total Instances > Busy Runners`, it assumes a VM is either idle or currently booting and will pick up the queued job, so it skips starting a new one.
+        *   **Relentless Global Hunter**: If no capacity exists, the function enters a **9-minute loop** (hunting round). It prioritizes `us-central1`, shuffling its zones first, and then sequentially falls back to other regions (`us-west1`, `us-east1`, `us-east4`) until capacity is found. It retries every 30 seconds if all regions are full (`ZONE_RESOURCE_POOL_EXHAUSTED`). This global search ensures builds never fail due to regional shortages.
         *   **Standard Provisioning Override**: The function explicitly overrides the instance template to use the `STANDARD` provisioning model (non-preemptible) to ensure availability during global Spot shortages.
     *   **On `completed`**: Does **not** aggressively delete the VM. It allows the VM to stay up and potentially pick up more jobs from the queue.
 3.  **Compute Engine VM (`infra/runner_startup.sh`)**:

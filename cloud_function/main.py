@@ -13,13 +13,21 @@ from google.cloud import secretmanager
 # --- Configuration (Passed from Terraform Environment Variables) ---
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "global-actions-runner")
 GCP_REGION = os.environ.get("GCP_REGION", "us-central1")
-# Default zone if region logic fails
-DEFAULT_ZONE = os.environ.get("GCP_ZONE", f"{GCP_REGION}-a")
 
 # The IDs of the secrets in Secret Manager
 PAT_SECRET_ID = os.environ.get("PAT_SECRET_ID", "github-pat")
 WEBHOOK_SECRET_ID = os.environ.get("WEBHOOK_SECRET_ID", "github-webhook-secret")
 TEMPLATE_PREFIX = os.environ.get("TEMPLATE_PREFIX", "github-spot-runner-")
+
+# Regional Hunting Configuration
+REGIONS_ZONES = {
+    "us-central1": ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"],
+    "us-west1": ["us-west1-a", "us-west1-b", "us-west1-c"],
+    "us-east1": ["us-east1-b", "us-east1-c", "us-east1-d"],
+    "us-east4": ["us-east4-a", "us-east4-b", "us-east4-c"]
+}
+# Order of preference: always start with central
+REGION_ORDER = ["us-central1", "us-west1", "us-east1", "us-east4"]
 
 logging.basicConfig(level=logging.INFO)
 
@@ -60,12 +68,7 @@ def _get_latest_template(project_id: str, prefix: str) -> compute_v1.InstanceTem
 
 def _get_random_zone(region: str) -> str:
     """Returns a random zone for the given region."""
-    # Common zones for us-central1 and us-west1
-    zones = {
-        "us-central1": ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"],
-        "us-west1": ["us-west1-a", "us-west1-b", "us-west1-c"]
-    }
-    region_zones = zones.get(region, [f"{region}-a"])
+    region_zones = REGIONS_ZONES.get(region, [f"{region}-a"])
     return random.choice(region_zones)
 
 
@@ -146,15 +149,14 @@ def github_webhook_handler(request):
 
         # 3.5 Check for existing capacity before provisioning
         try:
-            # 1. Get GCE instance count
+            # 1. Get GCE instance count across ALL zones we hunt in
             instance_client = compute_v1.InstancesClient()
-            # We check all zones to be sure
-            zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
             total_gce_instances = 0
-            for zone in zones:
-                instance_list = instance_client.list(project=GCP_PROJECT, zone=zone)
-                # Count instances matching our prefix
-                total_gce_instances += sum(1 for i in instance_list if i.name.startswith("gh-runner-"))
+            for region, zones in REGIONS_ZONES.items():
+                for zone in zones:
+                    instance_list = instance_client.list(project=GCP_PROJECT, zone=zone)
+                    # Count instances matching our prefix
+                    total_gce_instances += sum(1 for i in instance_list if i.name.startswith("gh-runner-"))
             
             # 2. Get GitHub busy count
             runners_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners"
@@ -191,7 +193,7 @@ def github_webhook_handler(request):
         # 4. Find the latest instance template
         template = _get_latest_template(GCP_PROJECT, TEMPLATE_PREFIX)
 
-        # 5. Spin up the VM with Retries
+        # 5. Spin up the VM - Relentless Hunting Loop
         instance_client = compute_v1.InstancesClient()
 
         # Merge metadata from the template with our new items
@@ -213,54 +215,53 @@ def github_webhook_handler(request):
             automatic_restart=False
         )
 
-        # 5. Spin up the VM - Relentless Hunting Loop
-        instance_client = compute_v1.InstancesClient()
-        zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
-        
         last_error = None
         loop_start = time.time()
         
         # Stay alive and hunt for up to 8.5 minutes (Function hard timeout is 9 mins)
         while (time.time() - loop_start) < 510:
-            random.shuffle(zones) # Spread load across zones
-            for selected_zone in zones:
-                # Update machine type for the current zone
-                instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/e2-medium"
-                print(f"INFO: [Hunt Round] Attempting to provision in '{selected_zone}' (Elapsed: {int(time.time() - loop_start)}s)...")
+            for region in REGION_ORDER:
+                zones = list(REGIONS_ZONES[region])
+                random.shuffle(zones) # Spread load across zones within the region
                 
-                try:
-                    request_insert = compute_v1.InsertInstanceRequest(
-                        project=GCP_PROJECT,
-                        zone=selected_zone,
-                        source_instance_template=template.self_link,
-                        instance_resource=instance_resource,
-                    )
+                for selected_zone in zones:
+                    # Update machine type for the current zone
+                    instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/e2-medium"
+                    print(f"INFO: [Hunt Round] Attempting to provision in '{selected_zone}' (Elapsed: {int(time.time() - loop_start)}s)...")
                     
-                    operation = instance_client.insert(request=request_insert)
-                    
-                    # Wait up to 120s to catch failures (like resource exhaustion)
                     try:
-                        operation.result(timeout=120)
-                        print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
-                        return ("Successfully provisioned VM", 200)
-                    except Exception as e:
-                        # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
-                        if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
-                            print(f"INFO: Provisioning request still pending in {selected_zone} after 120s, proceeding asynchronously. Operation: {operation.name}")
-                            return ("Successfully requested provisioning", 200)
+                        request_insert = compute_v1.InsertInstanceRequest(
+                            project=GCP_PROJECT,
+                            zone=selected_zone,
+                            source_instance_template=template.self_link,
+                            instance_resource=instance_resource,
+                        )
                         
-                        # Otherwise, it's a real error (like Resource Exhausted)
-                        print(f"WARNING: Provisioning failed in {selected_zone}: {e}")
+                        operation = instance_client.insert(request=request_insert)
+                        
+                        # Wait up to 120s to catch failures (like resource exhaustion)
+                        try:
+                            operation.result(timeout=120)
+                            print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
+                            return ("Successfully provisioned VM", 200)
+                        except Exception as e:
+                            # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
+                            if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
+                                print(f"INFO: Provisioning request still pending in {selected_zone} after 120s, proceeding asynchronously. Operation: {operation.name}")
+                                return ("Successfully requested provisioning", 200)
+                            
+                            # Otherwise, it's a real error (like Resource Exhausted)
+                            print(f"WARNING: Provisioning failed in {selected_zone}: {e}")
+                            last_error = e
+                            continue
+                        
+                    except Exception as e:
+                        print(f"WARNING: Request failed in {selected_zone}: {e}")
                         last_error = e
                         continue
-                    
-                except Exception as e:
-                    print(f"WARNING: Request failed in {selected_zone}: {e}")
-                    last_error = e
-                    continue
             
-            # If we exhausted all zones, wait before the next round
-            print(f"INFO: All zones exhausted ({GCP_PROJECT}). Waiting 30s before next hunting round... (Total elapsed: {int(time.time() - loop_start)}s)")
+            # If we exhausted all regions and zones, wait before the next round
+            print(f"INFO: All regions exhausted ({REGION_ORDER}). Waiting 30s before next hunting round... (Total elapsed: {int(time.time() - loop_start)}s)")
             time.sleep(30)
 
         raise last_error if last_error else RuntimeError("Failed to provision in any zone after relentless hunting.")
