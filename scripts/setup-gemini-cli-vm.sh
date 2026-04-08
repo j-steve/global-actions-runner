@@ -20,6 +20,13 @@ cat <<EOF > ~/.gemini/settings.json
 }
 EOF
 
+# Setup Git non-interactive mode.
+cat <<EOF > ~/.gemini/.env
+GIT_PAGER=cat
+GIT_TERMINAL_PROMPT=0
+GIT_EDITOR=true
+EOF
+
 # Enable TMUX scrolling.
 echo "set -g mouse on" >> ~/.tmux.conf
 tmux source-file ~/.tmux.conf
