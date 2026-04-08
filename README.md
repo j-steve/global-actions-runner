@@ -8,16 +8,27 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
 2.  **Cloud Function (`cloud_function/`)**:
     *   **On `queued`**: 
         *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label.
-        *   **Global Capacity-Aware Provisioning**: Prevents redundant VM spawns. It checks the number of existing GCE instances across **all supported regions** against the number of *busy* runners in GitHub. If `Total Instances > Busy Runners`, it assumes a VM is either idle or currently booting and will pick up the queued job, so it skips starting a new one.
+        **Global Capacity-Aware Provisioning**: Prevents redundant VM spawns. It checks for existing GCE instances explicitly labeled as `idle`.
+        *   **Idle Detection**: Only instances explicitly labeled as `idle` are considered available capacity. 
+        *   **Booting/Busy as Busy**: If an instance is `booting` or `busy`, it is excluded from the capacity count. This ensures that new jobs don't wait for a slow-booting VM or a VM that might be a "zombie." If `Idle Instances == 0`, the function will proceed to provision a new VM.
         *   **Relentless Global Hunter**: If no capacity exists, the function enters a **9-minute loop** (hunting round). It prioritizes `us-central1`, shuffling its zones first, and then sequentially falls back to other regions (`us-west1`, `us-east1`, `us-east4`) until capacity is found. It retries every 30 seconds if all regions are full (`ZONE_RESOURCE_POOL_EXHAUSTED`). This global search ensures builds never fail due to regional shortages.
         *   **Standard Provisioning Override**: The function explicitly overrides the instance template to use the `STANDARD` provisioning model (non-preemptible) to ensure availability during global Spot shortages.
-    *   **On `completed`**: Does **not** aggressively delete the VM. It allows the VM to stay up and potentially pick up more jobs from the queue.
-3.  **Compute Engine VM (`infra/runner_startup.sh`)**:
-    *   **Persistent Runner**: The runner is configured to stay registered after completing a job, allowing it to handle sequential tasks without rebooting.
-    *   **Idle Monitor**: Runs a background loop that monitors for the `Runner.Worker` process. If the runner remains idle (no job running) for **10 consecutive minutes**, the VM automatically deletes itself.
-    *   **Hard Lifetime Cap**: VMs are configured with a `max_run_duration` of **120 minutes** as a safety "dead man's switch."
-    *   **Standard Instances**: Uses `STANDARD` instances for maximum reliability.
-4.  **Artifact Registry**: Includes a Docker Hub pull-through cache to speed up image pulls.
+        *   **On `completed`**: Does **not** aggressively delete the VM. It allows the VM to stay up and potentially pick up more jobs from the queue.
+        3.  **Compute Engine VM (`infra/runner_startup.sh`)**:
+        *   **Persistent Runner**: The runner is configured to stay registered after completing a job, allowing it to handle sequential tasks without rebooting.
+        *   **Idle Monitor**: Runs a background loop that monitors for the `Runner.Worker` process and updates its `runner-state` label (`booting`, `busy`, or `idle`). If the runner remains idle (no job running) for **10 consecutive minutes**, the VM automatically deletes itself.
+        *   **Hard Lifetime Cap**: VMs are configured with a `max_run_duration` of **120 minutes** as a safety "dead man's switch."
+        *   **Standard Instances**: Uses `STANDARD` instances for maximum reliability.
+        4.  **Artifact Registry**: Includes a Docker Hub pull-through cache to speed up image pulls.
+
+        ## State-Aware Scaling
+        To solve the issue where new jobs were stuck waiting for VMs that were already busy but not yet reported as such by GitHub, we've implemented direct state-tracking via GCE labels:
+        1.  **Booting**: Every new VM starts as `booting`. The provisioner treats this as "busy."
+        2.  **Busy**: When a VM picks up a job (detected via the `Runner.Worker` process), it labels itself as `busy`.
+        3.  **Idle**: If a VM is not running a job for 60 seconds, it labels itself as `idle`.
+
+        The Cloud Function **only skips provisioning** if it finds an instance explicitly labeled as `idle`. This ensures 100% parallel scaling when needed while still allowing warm instances to be reused when truly idle.
+
 
 ## Project Structure
 

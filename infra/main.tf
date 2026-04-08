@@ -242,6 +242,7 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
 
   labels = {
     goog-terraform-provisioned = "true"
+    runner-state               = "booting"
   }
 
   lifecycle {

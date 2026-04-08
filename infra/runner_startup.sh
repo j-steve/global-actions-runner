@@ -29,15 +29,29 @@ RUNNER_PID=$!
 
 echo "--- Starting Idle Monitor ---"
 # Idle monitor: If no job is running (no Runner.Worker process) for 10 minutes, shut down.
-# HOWEVER, if this is the last remaining live server in us-central1, it waits for 60 minutes.
+# UPDATED: Also updates a 'runner-state' label so the provisioner knows we're busy.
 IDLE_COUNT=0
 BASE_MAX_IDLE=10 
 EXTENDED_MAX_IDLE=60
 MAX_IDLE=$BASE_MAX_IDLE
+CURRENT_STATE="booting"
 
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
 INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
 INSTANCE_REGION=$(echo "$INSTANCE_ZONE" | cut -d'-' -f1,2)
+
+# Function to update label with retry
+update_state() {
+    local new_state=$1
+    if [ "$CURRENT_STATE" != "$new_state" ]; then
+        echo "Updating runner-state from $CURRENT_STATE to $new_state..."
+        if gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=$new_state" --project="$PROJECT_ID" --quiet; then
+            CURRENT_STATE=$new_state
+        else
+            echo "Warning: Failed to update label to $new_state."
+        fi
+    fi
+}
 
 while true; do
     sleep 60
@@ -45,8 +59,14 @@ while true; do
     if pgrep -f "Runner.Worker" > /dev/null; then
         echo "Runner is busy. Resetting idle counter."
         IDLE_COUNT=0
+        update_state "busy"
     else
         IDLE_COUNT=$((IDLE_COUNT + 1))
+        
+        # After 1 minute of true idleness, flag as idle for the provisioner
+        if [ $IDLE_COUNT -ge 1 ]; then
+            update_state "idle"
+        fi
         
         # Check if we should extend the timeout (at the 10-minute mark or if already extended)
         if [ "$INSTANCE_REGION" == "us-central1" ] && [ $IDLE_COUNT -ge $BASE_MAX_IDLE ]; then

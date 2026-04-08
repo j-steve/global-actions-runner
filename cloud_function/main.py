@@ -149,29 +149,24 @@ def github_webhook_handler(request):
 
         # 3.5 Check for existing capacity before provisioning
         try:
-            # 1. Get GCE instance count across ALL zones we hunt in
+            # Check GCE instances across ALL zones we hunt in
             instance_client = compute_v1.InstancesClient()
-            total_gce_instances = 0
+            potential_capacity = 0
+            
             for region, zones in REGIONS_ZONES.items():
                 for zone in zones:
                     instance_list = instance_client.list(project=GCP_PROJECT, zone=zone)
-                    # Count instances matching our prefix
-                    total_gce_instances += sum(1 for i in instance_list if i.name.startswith("gh-runner-"))
+                    for instance in instance_list:
+                        if instance.name.startswith("gh-runner-"):
+                            # Read the state label (default to 'booting' if not set yet)
+                            state = instance.labels.get("runner-state", "booting")
+                            if state == "idle":
+                                potential_capacity += 1
             
-            # 2. Get GitHub busy count
-            runners_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners"
-            runners_resp = requests.get(runners_url, headers=headers)
-            busy_runners = 0
-            if runners_resp.status_code == 200:
-                runners = runners_resp.json().get("runners", [])
-                # Only count online runners that have our label
-                matching_online = [r for r in runners if r.get("status") == "online" and any(l.get("name") == "gcp-spot-runner" for l in r.get("labels", []))]
-                busy_runners = sum(1 for r in matching_online if r.get("busy") == True)
+            print(f"INFO: Capacity Check - Potential Capacity (Booting/Idle): {potential_capacity}")
             
-            print(f"INFO: Capacity Check - GCE Instances: {total_gce_instances}, Busy Runners in GitHub: {busy_runners}")
-            
-            if total_gce_instances > busy_runners:
-                print(f"INFO: Existing capacity detected ({total_gce_instances - busy_runners} available/booting). Skipping VM provisioning for job {job_id}.")
+            if potential_capacity > 0:
+                print(f"INFO: Existing capacity detected ({potential_capacity} available/booting). Skipping VM provisioning for job {job_id}.")
                 return ("Capacity available", 200)
                 
         except Exception as e:
