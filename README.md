@@ -9,9 +9,8 @@ This project provides a scalable, ephemeral GitHub Actions runner infrastructure
     *   **On `queued`**: 
         *   **Label Filtering**: Only processes jobs that specifically request the `gcp-spot-runner` label.
         *   **Capacity-Aware Provisioning**: Prevents redundant VM spawns. It checks the number of existing GCE instances against the number of *busy* runners in GitHub. If `Total Instances > Busy Runners`, it assumes a VM is either idle or currently booting and will pick up the queued job, so it skips starting a new one.
-        *   **Multi-Zone Resilience**: If a GCP zone is out of resources (e.g., `ZONE_RESOURCE_POOL_EXHAUSTED`), the function shuffles and iterates through all available zones until provisioning succeeds.
+        *   **Relentless Hunter**: If no capacity exists, the function enters a **9-minute loop** (hunting round). It shuffles and iterates through all available zones, retrying every 30 seconds if all zones are full (`ZONE_RESOURCE_POOL_EXHAUSTED`). This ensures that short-term capacity dips don't cause permanent build failures.
         *   **Standard Provisioning Override**: The function explicitly overrides the instance template to use the `STANDARD` provisioning model (non-preemptible) to ensure availability during global Spot shortages.
-        *   **High Timeout**: The function has a 300-second timeout and waits up to 60 seconds per zone to catch and handle resource exhaustion errors.
     *   **On `completed`**: Does **not** aggressively delete the VM. It allows the VM to stay up and potentially pick up more jobs from the queue.
 3.  **Compute Engine VM (`infra/runner_startup.sh`)**:
     *   **Persistent Runner**: The runner is configured to stay registered after completing a job, allowing it to handle sequential tasks without rebooting.

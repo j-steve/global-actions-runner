@@ -213,49 +213,57 @@ def github_webhook_handler(request):
             automatic_restart=False
         )
 
-        # 5. Spin up the VM - Iterate through zones on failure
+        # 5. Spin up the VM - Relentless Hunting Loop
         instance_client = compute_v1.InstancesClient()
         zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
-        random.shuffle(zones) # Start with a random zone to spread load
         
         last_error = None
-        for selected_zone in zones:
-            # Update machine type for the current zone
-            instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/e2-medium"
-            print(f"INFO: Attempting to provision instance '{instance_resource.name}' in zone '{selected_zone}'...")
-            
-            try:
-                request_insert = compute_v1.InsertInstanceRequest(
-                    project=GCP_PROJECT,
-                    zone=selected_zone,
-                    source_instance_template=template.self_link,
-                    instance_resource=instance_resource,
-                )
+        loop_start = time.time()
+        
+        # Stay alive and hunt for up to 8.5 minutes (Function hard timeout is 9 mins)
+        while (time.time() - loop_start) < 510:
+            random.shuffle(zones) # Spread load across zones
+            for selected_zone in zones:
+                # Update machine type for the current zone
+                instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/e2-medium"
+                print(f"INFO: [Hunt Round] Attempting to provision in '{selected_zone}' (Elapsed: {int(time.time() - loop_start)}s)...")
                 
-                operation = instance_client.insert(request=request_insert)
-                
-                # Wait up to 120s to catch immediate or near-immediate failures (like resource exhaustion)
-                # GCP is being extremely slow reporting exhausted zones today.
                 try:
-                    operation.result(timeout=120)
-                    print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
-                    return ("Successfully provisioned VM", 200)
+                    request_insert = compute_v1.InsertInstanceRequest(
+                        project=GCP_PROJECT,
+                        zone=selected_zone,
+                        source_instance_template=template.self_link,
+                        instance_resource=instance_resource,
+                    )
+                    
+                    operation = instance_client.insert(request=request_insert)
+                    
+                    # Wait up to 120s to catch failures (like resource exhaustion)
+                    try:
+                        operation.result(timeout=120)
+                        print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
+                        return ("Successfully provisioned VM", 200)
+                    except Exception as e:
+                        # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
+                        if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
+                            print(f"INFO: Provisioning request still pending in {selected_zone} after 120s, proceeding asynchronously. Operation: {operation.name}")
+                            return ("Successfully requested provisioning", 200)
+                        
+                        # Otherwise, it's a real error (like Resource Exhausted)
+                        print(f"WARNING: Provisioning failed in {selected_zone}: {e}")
+                        last_error = e
+                        continue
+                    
                 except Exception as e:
-                    # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
-                    if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
-                        print(f"INFO: Provisioning request still pending in {selected_zone} after 120s, proceeding asynchronously. Operation: {operation.name}")
-                        return ("Successfully requested provisioning", 200)
-                    # Otherwise, it's a real error (like Resource Exhausted)
-                    print(f"WARNING: Provisioning failed in {selected_zone}: {e}")
+                    print(f"WARNING: Request failed in {selected_zone}: {e}")
                     last_error = e
                     continue
-                
-            except Exception as e:
-                print(f"WARNING: Request failed in {selected_zone}: {e}")
-                last_error = e
-                continue
+            
+            # If we exhausted all zones, wait before the next round
+            print(f"INFO: All zones exhausted ({GCP_PROJECT}). Waiting 30s before next hunting round... (Total elapsed: {int(time.time() - loop_start)}s)")
+            time.sleep(30)
 
-        raise last_error if last_error else RuntimeError("Failed to provision in any zone.")
+        raise last_error if last_error else RuntimeError("Failed to provision in any zone after relentless hunting.")
 
     except Exception as e:
         print(f"ERROR: Failed to provision runner for job {job_id}: {e}")
