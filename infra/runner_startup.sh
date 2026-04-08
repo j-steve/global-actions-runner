@@ -29,16 +29,41 @@ RUNNER_PID=$!
 
 echo "--- Starting Idle Monitor ---"
 # Idle monitor: If no job is running (no Runner.Worker process) for 10 minutes, shut down.
+# HOWEVER, if this is the last remaining live server in us-central1, it waits for 60 minutes.
 IDLE_COUNT=0
-MAX_IDLE=10 # 10 minutes
+BASE_MAX_IDLE=10 
+EXTENDED_MAX_IDLE=60
+MAX_IDLE=$BASE_MAX_IDLE
+
+INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
+INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
+INSTANCE_REGION=$(echo "$INSTANCE_ZONE" | cut -d'-' -f1,2)
 
 while true; do
     sleep 60
+    
     if pgrep -f "Runner.Worker" > /dev/null; then
         echo "Runner is busy. Resetting idle counter."
         IDLE_COUNT=0
     else
         IDLE_COUNT=$((IDLE_COUNT + 1))
+        
+        # Check if we should extend the timeout (at the 10-minute mark or if already extended)
+        if [ "$INSTANCE_REGION" == "us-central1" ] && [ $IDLE_COUNT -ge $BASE_MAX_IDLE ]; then
+            # Count other gh-runner instances in this region
+            OTHER_RUNNERS=$(gcloud compute instances list --project="$PROJECT_ID" \
+                --filter="name ~ ^gh-runner- AND name != $INSTANCE_NAME AND zone ~ $INSTANCE_REGION" \
+                --format="value(name)" | wc -l)
+            
+            if [ "$OTHER_RUNNERS" -eq 0 ]; then
+                echo "Runner is the LAST one in us-central1. Extending timeout to ${EXTENDED_MAX_IDLE}m."
+                MAX_IDLE=$EXTENDED_MAX_IDLE
+            else
+                echo "Other runners found in us-central1 (${OTHER_RUNNERS}). Keeping 10m timeout."
+                MAX_IDLE=$BASE_MAX_IDLE
+            fi
+        fi
+
         echo "Runner is idle. Idle count: ${IDLE_COUNT}/${MAX_IDLE}"
     fi
 
@@ -55,7 +80,4 @@ while true; do
 done
 
 echo "--- Shutting Down and Deleting Self ---"
-INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
-INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
-
 gcloud compute instances delete "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet

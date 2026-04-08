@@ -59,7 +59,9 @@ The runners use a custom base image (`github-runner-base-v4`) pre-loaded with Do
 
 The system is designed to be "zero-maintenance" regarding dead VMs. Cleanup is handled by the **Idle Monitor** running on the VM:
 1.  **Idle Detection**: The VM checks every minute if a job is running.
-2.  **Self-Deletion**: If it remains idle for 10 minutes, it runs `gcloud compute instances delete` to terminate itself.
+2.  **Self-Deletion**: 
+    *   **Standard Cleanup**: If the runner remains idle (no job running) for **10 consecutive minutes**, the VM automatically deletes itself.
+    *   **Sticky Central Hub**: If a runner is located in `us-central1` and it is the **last remaining** live runner in that region, it will extend its idle timeout to **60 minutes** before self-deleting. This ensures we keep at least one "warm" runner in our primary region longer than usual.
 3.  **Hard Cap**: GCP will automatically delete the instance after 120 minutes regardless of state.
 
 This approach ensures that VMs stay alive to process back-to-back jobs (saving provisioning time) but eventually clean themselves up to save costs when the queue is empty. Both service accounts have the necessary permissions to facilitate this.
