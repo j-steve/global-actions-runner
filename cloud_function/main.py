@@ -221,8 +221,7 @@ def github_webhook_handler(request):
         last_error = None
         for selected_zone in zones:
             # Update machine type for the current zone
-            # n2-standard-2 often has better availability than e2 during shortages
-            instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/n2-standard-2"
+            instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/e2-medium"
             print(f"INFO: Attempting to provision instance '{instance_resource.name}' in zone '{selected_zone}'...")
             
             try:

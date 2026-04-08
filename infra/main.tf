@@ -155,7 +155,7 @@ resource "google_cloudfunctions2_function" "github_trigger_function" {
   service_config {
     max_instance_count = 5
     min_instance_count = 0
-    available_memory   = "256Mi"
+    available_memory   = "512Mi"
     timeout_seconds    = 540
     service_account_email = google_service_account.gcf_trigger_sa.email
     environment_variables = {
@@ -204,7 +204,7 @@ resource "google_artifact_registry_repository" "docker_hub_cache" {
 resource "google_compute_instance_template" "ephemeral_runner_template" {
   project      = var.hub_project
   name_prefix  = "github-spot-runner-"
-  machine_type = "e2-standard-2"
+  machine_type = "e2-medium"
   region       = var.region
 
   scheduling {
