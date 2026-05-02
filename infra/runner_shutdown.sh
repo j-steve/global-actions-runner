@@ -1,8 +1,19 @@
 #!/bin/bash
 # This script runs during the 30-second preemption grace period.
 
-LOG_FILE="/var/log/runner-shutdown.log"
-echo "[$(date)] --- Shutdown script triggered ---" | tee -a $LOG_FILE
+LOG_NAME="runner-shutdown"
+
+log_info() {
+    local msg="$1"
+    echo "[$(date)] $msg"
+    gcloud logging write $LOG_NAME "{\"instance\": \"$INSTANCE_NAME\", \"message\": \"$msg\", \"severity\": \"INFO\"}" --payload-type=json --project="$PROJECT_ID" --quiet || true
+}
+
+log_error() {
+    local msg="$1"
+    echo "[$(date)] ERROR: $msg"
+    gcloud logging write $LOG_NAME "{\"instance\": \"$INSTANCE_NAME\", \"message\": \"$msg\", \"severity\": \"ERROR\"}" --payload-type=json --project="$PROJECT_ID" --quiet || true
+}
 
 # 1. Fetch necessary info
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
@@ -10,8 +21,10 @@ INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.int
 PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id")
 REPO_URL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_repo")
 
+log_info "--- Shutdown script triggered ---"
+
 if [ ! -f /home/runner/.github-pat ]; then
-    echo "[$(date)] ERROR: PAT not found at /home/runner/.github-pat" | tee -a $LOG_FILE
+    log_error "PAT not found at /home/runner/.github-pat"
     exit 1
 fi
 PAT=$(cat /home/runner/.github-pat)
@@ -19,13 +32,13 @@ PAT=$(cat /home/runner/.github-pat)
 # Extract owner/repo from URL
 OWNER_REPO=$(echo $REPO_URL | sed 's|https://github.com/||')
 
-echo "[$(date)] Preemption detected for $INSTANCE_NAME. Cleaning up GitHub..." | tee -a $LOG_FILE
+log_info "Preemption or shutdown detected for $INSTANCE_NAME. Cleaning up GitHub..."
 
 # 2. Mark state as preempted in labels so the provisioner knows
 if gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=preempted" --project="$PROJECT_ID" --quiet; then
-    echo "[$(date)] Successfully updated instance label to preempted." | tee -a $LOG_FILE
+    log_info "Successfully updated instance label to preempted."
 else
-    echo "[$(date)] WARNING: Failed to update instance label." | tee -a $LOG_FILE
+    log_error "Failed to update instance label."
 fi
 
 # 3. Find the Runner ID by name and DELETE it from GitHub
@@ -34,12 +47,12 @@ RUNNER_ID=$(curl -s -X GET -H "Authorization: token $PAT" -H "Accept: applicatio
     jq -r ".runners[] | select(.name == \"$INSTANCE_NAME\") | .id")
 
 if [ -n "$RUNNER_ID" ] && [ "$RUNNER_ID" != "null" ]; then
-    echo "[$(date)] Removing runner ID $RUNNER_ID from GitHub..." | tee -a $LOG_FILE
+    log_info "Removing runner ID $RUNNER_ID from GitHub..."
     DELETE_RESPONSE=$(curl -s -X DELETE -H "Authorization: token $PAT" -H "Accept: application/vnd.github.v3+json" \
         "https://api.github.com/repos/$OWNER_REPO/actions/runners/$RUNNER_ID")
-    echo "[$(date)] Delete response: $DELETE_RESPONSE" | tee -a $LOG_FILE
+    log_info "GitHub delete response: $DELETE_RESPONSE"
 else
-    echo "[$(date)] No Runner ID found for $INSTANCE_NAME in GitHub." | tee -a $LOG_FILE
+    log_info "No Runner ID found for $INSTANCE_NAME in GitHub."
 fi
 
-echo "[$(date)] --- Shutdown script finished ---" | tee -a $LOG_FILE
+log_info "--- Shutdown script finished ---"
