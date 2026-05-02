@@ -10,6 +10,7 @@ gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --l
 
 # 1. Fetch metadata
 RUNNER_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_token")
+REPO_URL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_repo")
 
 echo "--- GITHUB RUNNER STARTING ---"
 
