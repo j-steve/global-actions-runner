@@ -17,17 +17,11 @@ GCP_REGION = os.environ.get("GCP_REGION", "us-central1")
 # The IDs of the secrets in Secret Manager
 PAT_SECRET_ID = os.environ.get("PAT_SECRET_ID", "github-pat")
 WEBHOOK_SECRET_ID = os.environ.get("WEBHOOK_SECRET_ID", "github-webhook-secret")
-TEMPLATE_PREFIX = os.environ.get("TEMPLATE_PREFIX", "github-spot-runner-")
 
-# Regional Hunting Configuration
-REGIONS_ZONES = {
-    "us-central1": ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"],
-    "us-west1": ["us-west1-a", "us-west1-b", "us-west1-c"],
-    "us-east1": ["us-east1-b", "us-east1-c", "us-east1-d"],
-    "us-east4": ["us-east4-a", "us-east4-b", "us-east4-c"]
-}
-# Order of preference: always start with central
-REGION_ORDER = ["us-central1", "us-west1", "us-east1", "us-east4"]
+STATIC_RUNNERS = [
+    {"name": "gh-static-runner-1", "zone": "us-central1-a"},
+    {"name": "gh-static-runner-2", "zone": "us-central1-b"},
+]
 
 logging.basicConfig(level=logging.INFO)
 
@@ -43,38 +37,9 @@ def _get_secret(project_id: str, secret_id: str) -> str:
         print(f"ERROR: Error fetching secret '{secret_id}': {e}")
         raise
 
-def _get_latest_template(project_id: str, prefix: str) -> compute_v1.InstanceTemplate:
-    """Finds the most recent instance template with a given prefix."""
-    try:
-        client = compute_v1.InstanceTemplatesClient()
-        templates = client.list(project=project_id)
-        
-        filtered_templates = [t for t in templates if t.name.startswith(prefix)]
-
-        if not filtered_templates:
-            raise RuntimeError(f"No instance templates found with prefix '{prefix}' in project '{project_id}'.")
-
-        latest_template = sorted(
-            filtered_templates,
-            key=lambda t: t.creation_timestamp,
-            reverse=True
-        )[0]
-        
-        print(f"INFO: Found latest template: {latest_template.name}")
-        return latest_template
-    except Exception as e:
-        print(f"ERROR: Error finding latest instance template with prefix '{prefix}': {e}")
-        raise
-
-def _get_random_zone(region: str) -> str:
-    """Returns a random zone for the given region."""
-    region_zones = REGIONS_ZONES.get(region, [f"{region}-a"])
-    return random.choice(region_zones)
-
-
 def github_webhook_handler(request):
     """
-    Cloud Function to provision a GitHub Actions runner VM based on a webhook.
+    Cloud Function to manage persistent GitHub Actions runner VMs.
     """
     # 1. Verify the webhook signature
     signature_header = request.headers.get("X-Hub-Signature-256")
@@ -105,162 +70,105 @@ def github_webhook_handler(request):
 
     # 2. Validate the webhook is a 'workflow_job'
     if not payload or "workflow_job" not in payload:
-        print(f"INFO: Ignoring webhook, not a workflow job.")
         return ("Ignoring request", 200)
 
     action = payload.get("action")
     repo_full_name = payload["repository"]["full_name"]
     repo_url = payload["repository"]["html_url"]
     job_id = payload["workflow_job"]["id"]
-    
-    # Identify which instance to delete
-    # 1. Check if GitHub told us which runner ran the job
-    runner_name_from_payload = payload["workflow_job"].get("runner_name")
-    if runner_name_from_payload and runner_name_from_payload.startswith("gh-runner-"):
-        instance_name = runner_name_from_payload.lower()
-    else:
-        # Fallback to the name we would have given it
-        instance_name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
 
     if action == "completed":
-        print(f"INFO: Job '{job_id}' completed. Skipping aggressive deletion; VM will self-delete when idle.")
-        return ("Skipping deletion, VM handles itself", 200)
+        print(f"INFO: Job '{job_id}' completed.")
+        return ("Job completed", 200)
 
     if action != "queued":
-        print(f"INFO: Ignoring action '{action}'.")
         return ("Ignoring request", 200)
     
-    # 2.5 Filter by label
+    # Check for label
     labels = payload["workflow_job"].get("labels", [])
     if "gcp-spot-runner" not in labels:
-        print(f"INFO: Ignoring queued job '{job_id}', does not request 'gcp-spot-runner' label (labels: {labels}).")
+        print(f"INFO: Ignoring job '{job_id}', no 'gcp-spot-runner' label.")
         return ("Ignoring request", 200)
     
-    print(f"INFO: Received queued job '{job_id}' for repo '{repo_full_name}'.")
+    print(f"INFO: Received queued job '{job_id}' for repo '{repo_full_name}'. Checking static capacity...")
 
     try:
-        # 3. Get a short-lived registration token from GitHub
-        github_pat = _get_secret(GCP_PROJECT, PAT_SECRET_ID)
+        instance_client = compute_v1.InstancesClient()
         
+        # 3. Find an available static runner
+        target_instance = None
+        target_zone = None
+        
+        for runner in STATIC_RUNNERS:
+            try:
+                instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
+                state = instance.labels.get("runner-state", "idle")
+                
+                # If running and idle, we're good
+                if instance.status == "RUNNING" and state == "idle":
+                    print(f"INFO: Static runner '{runner['name']}' is ALREADY RUNNING and IDLE. It should pick up the job.")
+                    return ("Capacity available", 200)
+                
+                # If terminated, this is our candidate to start
+                if instance.status == "TERMINATED":
+                    print(f"INFO: Found terminated static runner: {runner['name']}. Selecting for startup.")
+                    target_instance = runner["name"]
+                    target_zone = runner["zone"]
+                    break
+            except Exception as e:
+                print(f"WARNING: Could not check status of {runner['name']}: {e}")
+
+        if not target_instance:
+            print("INFO: No static runners available (all busy). GitHub will retry or job will wait.")
+            return ("No capacity available", 200)
+
+        # 4. Get a short-lived registration token from GitHub
+        github_pat = _get_secret(GCP_PROJECT, PAT_SECRET_ID)
+        api_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/registration-token"
         headers = {
             "Authorization": f"token {github_pat}",
             "Accept": "application/vnd.github.v3+json",
         }
-
-        # 3.5 Check for existing capacity before provisioning
-        try:
-            # Check GCE instances across ALL zones we hunt in
-            instance_client = compute_v1.InstancesClient()
-            potential_capacity = 0
-            
-            for region, zones in REGIONS_ZONES.items():
-                for zone in zones:
-                    instance_list = instance_client.list(project=GCP_PROJECT, zone=zone)
-                    for instance in instance_list:
-                        if instance.name.startswith("gh-runner-"):
-                            # Read the state label (default to 'booting' if not set yet)
-                            state = instance.labels.get("runner-state", "booting")
-                            if state == "idle":
-                                potential_capacity += 1
-            
-            print(f"INFO: Capacity Check - Potential Capacity (Booting/Idle): {potential_capacity}")
-            
-            if potential_capacity > 0:
-                print(f"INFO: Existing capacity detected ({potential_capacity} available/booting). Skipping VM provisioning for job {job_id}.")
-                return ("Capacity available", 200)
-                
-        except Exception as e:
-            print(f"WARNING: Failed capacity check: {e}. Proceeding with default provisioning logic.")
-
-        api_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/registration-token"
         
         resp = requests.post(api_url, headers=headers)
-        if resp.status_code != 201:
-            print(f"ERROR: GitHub API error: {resp.text}")
-            resp.raise_for_status()
-        
+        resp.raise_for_status()
         runner_token = resp.json().get("token")
-        if not runner_token:
-            raise RuntimeError("GitHub API response did not include a runner token.")
+
+        # 5. Update Metadata with NEW Token and START Instance
+        print(f"INFO: Updating metadata and starting {target_instance}...")
         
-        print("INFO: Successfully obtained runner registration token from GitHub.")
-
-        # 4. Find the latest instance template
-        template = _get_latest_template(GCP_PROJECT, TEMPLATE_PREFIX)
-
-        # 5. Spin up the VM - Relentless Hunting Loop
-        instance_client = compute_v1.InstancesClient()
-
-        # Merge metadata from the template with our new items
-        new_metadata_items = []
-        if template.properties.metadata and template.properties.metadata.items:
-            new_metadata_items = list(template.properties.metadata.items)
+        # Get existing metadata to preserve startup-script
+        instance_data = instance_client.get(project=GCP_PROJECT, zone=target_zone, instance=target_instance)
+        metadata = instance_data.metadata
         
-        new_metadata_items.append(compute_v1.Items(key="github_token", value=runner_token))
-        new_metadata_items.append(compute_v1.Items(key="github_repo", value=repo_url))
-
-        instance_resource = compute_v1.Instance()
-        instance_resource.name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
-        instance_resource.metadata = compute_v1.Metadata(items=new_metadata_items)
+        # Add/Update the token and repo
+        items = list(metadata.items)
+        found_token = False
+        found_repo = False
+        for item in items:
+            if item.key == "github_token":
+                item.value = runner_token
+                found_token = True
+            if item.key == "github_repo":
+                item.value = repo_url
+                found_repo = True
         
-        # Force SPOT provisioning model
-        instance_resource.scheduling = compute_v1.Scheduling(
-            provisioning_model="SPOT",
-            preemptible=True,
-            automatic_restart=False
-        )
-
-        last_error = None
-        loop_start = time.time()
-        
-        # Stay alive and hunt for up to 8.5 minutes (Function hard timeout is 9 mins)
-        while (time.time() - loop_start) < 510:
-            for region in REGION_ORDER:
-                zones = list(REGIONS_ZONES[region])
-                random.shuffle(zones) # Spread load across zones within the region
-                
-                for selected_zone in zones:
-                    # Update machine type for the current zone
-                    instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/n2-standard-4"
-                    print(f"INFO: [Hunt Round] Attempting to provision in '{selected_zone}' (Elapsed: {int(time.time() - loop_start)}s)...")
-                    
-                    try:
-                        request_insert = compute_v1.InsertInstanceRequest(
-                            project=GCP_PROJECT,
-                            zone=selected_zone,
-                            source_instance_template=template.self_link,
-                            instance_resource=instance_resource,
-                        )
-                        
-                        operation = instance_client.insert(request=request_insert)
-                        
-                        # Wait up to 120s to catch failures (like resource exhaustion)
-                        try:
-                            operation.result(timeout=120)
-                            print(f"INFO: Successfully provisioned in {selected_zone}. Operation: {operation.name}")
-                            return ("Successfully provisioned VM", 200)
-                        except Exception as e:
-                            # If it's a timeout, it means it's likely proceeding fine (just not finished yet)
-                            if "DeadlineExceeded" in str(e) or "Timeout" in str(e) or "timeout" in str(e).lower():
-                                print(f"INFO: Provisioning request still pending in {selected_zone} after 120s, proceeding asynchronously. Operation: {operation.name}")
-                                return ("Successfully requested provisioning", 200)
-                            
-                            # Otherwise, it's a real error (like Resource Exhausted)
-                            print(f"WARNING: Provisioning failed in {selected_zone}: {e}")
-                            last_error = e
-                            continue
-                        
-                    except Exception as e:
-                        print(f"WARNING: Request failed in {selected_zone}: {e}")
-                        last_error = e
-                        continue
+        if not found_token:
+            items.append(compute_v1.Items(key="github_token", value=runner_token))
+        if not found_repo:
+            items.append(compute_v1.Items(key="github_repo", value=repo_url))
             
-            # If we exhausted all regions and zones, wait before the next round
-            print(f"INFO: All regions exhausted ({REGION_ORDER}). Waiting 30s before next hunting round... (Total elapsed: {int(time.time() - loop_start)}s)")
-            time.sleep(30)
-
-        raise last_error if last_error else RuntimeError("Failed to provision in any zone after relentless hunting.")
+        metadata.items = items
+        
+        # Set Metadata
+        instance_client.set_metadata(project=GCP_PROJECT, zone=target_zone, instance=target_instance, metadata_resource=metadata).result()
+        
+        # Start Instance
+        instance_client.start(project=GCP_PROJECT, zone=target_zone, instance=target_instance).result()
+        
+        print(f"INFO: Successfully started {target_instance}.")
+        return ("Successfully started static runner", 200)
 
     except Exception as e:
-        print(f"ERROR: Failed to provision runner for job {job_id}: {e}")
+        print(f"ERROR: Failed to manage static runner: {e}")
         return ("Error processing request", 500)

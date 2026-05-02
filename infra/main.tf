@@ -230,29 +230,32 @@ resource "google_storage_bucket_iam_member" "gemini_cli_bazel_cache_admin" {
 }
 
 # ==============================================================================
-# 8. Runner VM Instance Template
+# 8. Persistent Runner VM Instances
 # ==============================================================================
-resource "google_compute_instance_template" "ephemeral_runner_template" {
+resource "google_compute_instance" "persistent_runner" {
+  count        = 2
   project      = var.hub_project
-  name_prefix  = "github-spot-runner-"
+  name         = "gh-static-runner-${count.index + 1}"
   machine_type = "n2-standard-4"
+  zone         = "us-central1-${count.index == 0 ? "a" : "b"}"
+
+  # Allow stopping for machine type or metadata changes
+  allow_stopping_for_update = true
 
   scheduling {
     preemptible                 = true
     automatic_restart           = false
     provisioning_model          = "SPOT"
-    instance_termination_action = "DELETE"
-    max_run_duration {
-      seconds = 7200
-    }
+    instance_termination_action = "STOP" # Stop instead of delete on preemption
   }
 
-  disk {
-    # Points to the optimized image with pre-pulled Docker layers
-    source_image = "projects/${var.hub_project}/global/images/github-runner-base-v4"
-    disk_type    = "pd-ssd"
-    disk_size_gb = 50
-    auto_delete  = true
+  boot_disk {
+    auto_delete = false # Save the disk!
+    initialize_params {
+      image = "projects/${var.hub_project}/global/images/github-runner-base-v4"
+      size  = 50
+      type  = "pd-ssd"
+    }
   }
 
   network_interface {
@@ -270,15 +273,20 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
   metadata = {
     serial-port-logging-enable = "true"
     startup-script             = file("${path.module}/runner_startup.sh")
+    github_repo                = "https://github.com/j-steve/bellhop" # Default fallback
   }
 
   labels = {
     goog-terraform-provisioned = "true"
-    runner-state               = "booting"
+    runner-state               = "idle"
   }
 
   lifecycle {
-    create_before_destroy = true
+    ignore_changes = [
+      metadata["github_token"],
+      metadata["github_repo"],
+      labels["runner-state"]
+    ]
   }
 }
 
