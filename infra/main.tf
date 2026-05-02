@@ -199,7 +199,38 @@ resource "google_artifact_registry_repository" "docker_hub_cache" {
 }
 
 # ==============================================================================
-# 7. Runner VM Instance Template
+# 7. Global Bazel Cache
+# ==============================================================================
+resource "google_storage_bucket" "bazel_cache" {
+  project                     = var.hub_project
+  name                        = "global-bazel-cache"
+  location                    = var.region
+  uniform_bucket_level_access = true
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      age = 30
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "bazel_cache_admin" {
+  bucket = google_storage_bucket.bazel_cache.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.github_runner_sa.email}"
+}
+
+resource "google_storage_bucket_iam_member" "gemini_cli_bazel_cache_admin" {
+  bucket = google_storage_bucket.bazel_cache.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:gemini-cli-worker@bellhop-489500.iam.gserviceaccount.com"
+}
+
+# ==============================================================================
+# 8. Runner VM Instance Template
 # ==============================================================================
 resource "google_compute_instance_template" "ephemeral_runner_template" {
   project      = var.hub_project
@@ -251,9 +282,14 @@ resource "google_compute_instance_template" "ephemeral_runner_template" {
 }
 
 # ==============================================================================
-# 8. Outputs
+# 9. Outputs
 # ==============================================================================
 output "cloud_function_trigger_url" {
   description = "The HTTPS trigger URL for the Cloud Function."
   value       = google_cloudfunctions2_function.github_trigger_function.service_config[0].uri
+}
+
+output "bazel_cache_bucket" {
+  description = "The name of the Global Bazel Cache bucket."
+  value       = google_storage_bucket.bazel_cache.name
 }

@@ -70,17 +70,17 @@ while true; do
         
         # Check if we should extend the timeout (at the 10-minute mark or if already extended)
         if [ "$INSTANCE_REGION" == "us-central1" ] && [ $IDLE_COUNT -ge $BASE_MAX_IDLE ]; then
-            # Find the YOUNGEST gh-runner instance in this region
-            YOUNGEST_RUNNER=$(gcloud compute instances list --project="$PROJECT_ID" \
+            # Find the OLDEST gh-runner instance in this region
+            OLDEST_RUNNER=$(gcloud compute instances list --project="$PROJECT_ID" \
                 --filter="name ~ ^gh-runner- AND zone ~ $INSTANCE_REGION" \
-                --sort-by=~creationTimestamp \
+                --sort-by=creationTimestamp \
                 --format="value(name)" | head -n 1)
             
-            if [ "$INSTANCE_NAME" == "$YOUNGEST_RUNNER" ]; then
-                echo "Runner is the YOUNGEST in us-central1. Extending timeout to ${EXTENDED_MAX_IDLE}m."
+            if [ "$INSTANCE_NAME" == "$OLDEST_RUNNER" ]; then
+                echo "Runner is the OLDEST in us-central1. Extending timeout to ${EXTENDED_MAX_IDLE}m."
                 MAX_IDLE=$EXTENDED_MAX_IDLE
             else
-                echo "Younger runner found ($YOUNGEST_RUNNER). Keeping 10m timeout."
+                echo "Older runner found ($OLDEST_RUNNER). Keeping 10m timeout."
                 MAX_IDLE=$BASE_MAX_IDLE
             fi
         fi
