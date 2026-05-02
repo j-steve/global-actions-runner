@@ -273,6 +273,7 @@ resource "google_compute_instance" "persistent_runner" {
   metadata = {
     serial-port-logging-enable = "true"
     startup-script             = file("${path.module}/runner_startup.sh")
+    shutdown-script            = file("${path.module}/runner_shutdown.sh")
     github_repo                = "https://github.com/j-steve/bellhop" # Default fallback
   }
 
