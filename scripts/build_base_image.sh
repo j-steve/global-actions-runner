@@ -9,7 +9,7 @@ PROJECT_ID=$(gcloud config get-value project)
 ZONE="us-central1-a"
 BUILDER_NAME="image-builder-v$(date +%s)"
 # Use a version number that we can easily increment
-IMAGE_NAME="github-runner-base-v4"
+IMAGE_NAME="github-runner-base-v5"
 
 echo "--- Creating Builder Instance: $BUILDER_NAME ---"
 
