@@ -203,10 +203,10 @@ def github_webhook_handler(request):
         instance_resource.name = f"gh-runner-{repo_full_name.replace('/', '-')}-{job_id}".lower()
         instance_resource.metadata = compute_v1.Metadata(items=new_metadata_items)
         
-        # Force STANDARD provisioning model
+        # Force SPOT provisioning model
         instance_resource.scheduling = compute_v1.Scheduling(
-            provisioning_model="STANDARD",
-            preemptible=False,
+            provisioning_model="SPOT",
+            preemptible=True,
             automatic_restart=False
         )
 
@@ -221,7 +221,7 @@ def github_webhook_handler(request):
                 
                 for selected_zone in zones:
                     # Update machine type for the current zone
-                    instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/e2-medium"
+                    instance_resource.machine_type = f"zones/{selected_zone}/machineTypes/n2-standard-4"
                     print(f"INFO: [Hunt Round] Attempting to provision in '{selected_zone}' (Elapsed: {int(time.time() - loop_start)}s)...")
                     
                     try:

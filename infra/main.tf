@@ -235,12 +235,12 @@ resource "google_storage_bucket_iam_member" "gemini_cli_bazel_cache_admin" {
 resource "google_compute_instance_template" "ephemeral_runner_template" {
   project      = var.hub_project
   name_prefix  = "github-spot-runner-"
-  machine_type = "e2-medium"
+  machine_type = "n2-standard-4"
 
   scheduling {
-    preemptible                 = false
+    preemptible                 = true
     automatic_restart           = false
-    provisioning_model          = "STANDARD"
+    provisioning_model          = "SPOT"
     instance_termination_action = "DELETE"
     max_run_duration {
       seconds = 7200
