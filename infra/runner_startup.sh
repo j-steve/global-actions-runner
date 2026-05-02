@@ -8,18 +8,6 @@ PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.intern
 
 echo "--- GITHUB RUNNER STARTING ---"
 
-# 1.5 Configure Global Bazel (Persistent Cache)
-echo "--- Configuring Global Bazel ---"
-mkdir -p /home/runner/.bazel
-cat <<EOF > /etc/bazel.bazelrc
-# Use the global GCS bucket for remote caching
-build --remote_cache=gs://global-bazel-cache
-# Use a local directory on the persistent SSD for the installation cache (avoids re-downloading Bazel)
-startup --install_base=/home/runner/.bazel/install
-build --disk_cache=/home/runner/.bazel/cache
-EOF
-chown -R runner:runner /home/runner/.bazel
-
 # 2. Pre-fetch PAT for the shutdown script (to avoid gcloud overhead during preemption)
 # The runner service account needs secretmanager.secretAccessor role.
 gcloud secrets versions access latest --secret="github-pat" --project="$PROJECT_ID" > /home/runner/.github-pat
