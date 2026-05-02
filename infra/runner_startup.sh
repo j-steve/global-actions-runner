@@ -20,7 +20,7 @@ cd /home/runner/actions-runner
 echo "--- Configuring ---"
 # Clean up old state if it exists to allow re-registration
 rm -f .runner .credentials .credentials_rsaparams
-sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner
+sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace
 
 # 4. Run in background and monitor
 echo "--- Running ---"
