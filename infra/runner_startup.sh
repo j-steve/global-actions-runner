@@ -29,17 +29,22 @@ sudo -u runner ./run.sh &
 RUNNER_PID=$!
 
 echo "--- Starting Idle Monitor ---"
-# Idle monitor: If no job is running (no Runner.Worker process) for 10 minutes, shut down.
-# UPDATED: Also updates a 'runner-state' label so the provisioner knows we're busy.
-IDLE_COUNT=0
-BASE_MAX_IDLE=10 
-EXTENDED_MAX_IDLE=60
-MAX_IDLE=$BASE_MAX_IDLE
-CURRENT_STATE="booting"
-
+# Set custom idle timeouts per runner
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
 INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
-INSTANCE_REGION=$(echo "$INSTANCE_ZONE" | cut -d'-' -f1,2)
+
+if [ "$INSTANCE_NAME" == "gh-static-runner-1" ]; then
+    MAX_IDLE=60
+elif [ "$INSTANCE_NAME" == "gh-static-runner-2" ]; then
+    MAX_IDLE=30
+else
+    MAX_IDLE=10
+fi
+
+echo "Idle timeout set to ${MAX_IDLE}m for ${INSTANCE_NAME}"
+
+IDLE_COUNT=0
+CURRENT_STATE="booting"
 
 # Function to update label with retry
 update_state() {
@@ -67,23 +72,6 @@ while true; do
         # After 1 minute of true idleness, flag as idle for the provisioner
         if [ $IDLE_COUNT -ge 1 ]; then
             update_state "idle"
-        fi
-        
-        # Check if we should extend the timeout (at the 10-minute mark or if already extended)
-        if [ "$INSTANCE_REGION" == "us-central1" ] && [ $IDLE_COUNT -ge $BASE_MAX_IDLE ]; then
-            # Find the OLDEST gh-runner instance in this region
-            OLDEST_RUNNER=$(gcloud compute instances list --project="$PROJECT_ID" \
-                --filter="name ~ ^gh-runner- AND zone ~ $INSTANCE_REGION" \
-                --sort-by=creationTimestamp \
-                --format="value(name)" | head -n 1)
-            
-            if [ "$INSTANCE_NAME" == "$OLDEST_RUNNER" ]; then
-                echo "Runner is the OLDEST in us-central1. Extending timeout to ${EXTENDED_MAX_IDLE}m."
-                MAX_IDLE=$EXTENDED_MAX_IDLE
-            else
-                echo "Older runner found ($OLDEST_RUNNER). Keeping 10m timeout."
-                MAX_IDLE=$BASE_MAX_IDLE
-            fi
         fi
 
         echo "Runner is idle. Idle count: ${IDLE_COUNT}/${MAX_IDLE}"
