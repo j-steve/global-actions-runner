@@ -1,6 +1,20 @@
 #!/bin/bash
 set -ex
 
+# --- ZOMBIE PREVENTION: Failure Trap ---
+# If any command fails, we want the VM to shut itself down immediately.
+# This prevents it from staying 'RUNNING' in GCP while being 'Offline' in GitHub.
+# A stopped VM is visible to the Cloud Function as 'TERMINATED', which triggers a fresh start.
+failure_handler() {
+  local exit_code=$?
+  local line_no=$1
+  echo "--- ERROR: Startup script failed at line $line_no with exit code $exit_code. ---"
+  echo "--- Shutting down to avoid zombie state. ---"
+  sleep 10 # Give serial logs a moment to flush
+  gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet || true
+}
+trap 'failure_handler $LINENO' ERR
+
 PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id")
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
 INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
@@ -24,8 +38,12 @@ cd /home/runner/actions-runner
 
 # 3. Configure
 echo "--- Configuring ---"
-# Clean up old state if it exists to allow re-registration
-rm -f .runner .credentials .credentials_rsaparams
+# --- ZOMBIE PREVENTION: State Cleanup ---
+# We must remove .runner_migrated (created by newer runner versions) along with 
+# the standard .runner files. If these exist, config.sh will fail with 
+# "Already Configured" and the VM will hang.
+rm -f .runner .credentials .credentials_rsaparams .runner_migrated
+
 sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace
 
 # 4. Run in background and monitor

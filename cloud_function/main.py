@@ -37,6 +37,25 @@ def _get_secret(project_id: str, secret_id: str) -> str:
         print(f"ERROR: Error fetching secret '{secret_id}': {e}")
         raise
 
+def _get_github_runner_states(repo_full_name, pat):
+    """
+    Fetches the current status of all runners for the repository from GitHub.
+    This allows us to verify if a 'RUNNING' VM is actually connected.
+    """
+    try:
+        url = f"https://api.github.com/repos/{repo_full_name}/actions/runners"
+        headers = {
+            "Authorization": f"token {pat}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        # Map runner name -> status (online/offline)
+        return {r["name"]: r["status"] for r in resp.json().get("runners", [])}
+    except Exception as e:
+        print(f"WARNING: Failed to fetch runner states from GitHub: {e}")
+        return {}
+
 def github_webhook_handler(request):
     """
     Cloud Function to manage persistent GitHub Actions runner VMs.
@@ -49,6 +68,7 @@ def github_webhook_handler(request):
 
     try:
         webhook_secret = _get_secret(GCP_PROJECT, WEBHOOK_SECRET_ID)
+        github_pat = _get_secret(GCP_PROJECT, PAT_SECRET_ID) # Fetch PAT early for audit
         request_body = request.get_data()
         
         expected_signature = "sha256=" + hmac.new(
@@ -92,6 +112,10 @@ def github_webhook_handler(request):
     
     print(f"INFO: Received queued job '{job_id}' for repo '{repo_full_name}'. Checking static capacity...")
 
+    # --- ZOMBIE AUDIT ---
+    # Before checking capacity, we ask GitHub what it sees.
+    gh_runner_states = _get_github_runner_states(repo_full_name, github_pat)
+
     try:
         instance_client = compute_v1.InstancesClient()
         
@@ -99,19 +123,45 @@ def github_webhook_handler(request):
         target_instance = None
         target_zone = None
         
+        print("INFO: Checking status of all static runners...")
         for runner in STATIC_RUNNERS:
             try:
                 instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
-                state = instance.labels.get("runner-state", "idle")
+                label_state = instance.labels.get("runner-state", "unknown")
+                
+                # --- ZOMBIE DETECTION ---
+                # If GCP says the VM is RUNNING, but GitHub says it is NOT online, it's a zombie.
+                # We force-stop it so it can be kickstarted cleanly.
+                gh_status = gh_runner_states.get(runner["name"], "not_registered")
+                if instance.status == "RUNNING" and gh_status != "online":
+                    print(f"ZOMBIE DETECTED: Runner '{runner['name']}' is RUNNING in GCP but '{gh_status}' in GitHub. Stopping instance.")
+                    instance_client.stop(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"]).result()
+                    # Update local status variable so the logic below sees it as available
+                    instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
+
+                print(f"INFO: Runner '{runner['name']}' is {instance.status} with label '{label_state}'.")
                 
                 # If running and idle, we're good
-                if instance.status == "RUNNING" and state == "idle":
+                if instance.status == "RUNNING" and label_state == "idle":
                     print(f"INFO: Static runner '{runner['name']}' is ALREADY RUNNING and IDLE. It should pick up the job.")
                     return ("Capacity available", 200)
                 
-                # If terminated, this is our candidate to start
-                if instance.status == "TERMINATED":
-                    print(f"INFO: Found terminated static runner: {runner['name']}. Selecting for startup.")
+                # --- AGGRESSIVE SELF-HEALING ---
+                # We want to rescue runners in almost any state if they aren't active.
+                # If it's TERMINATED, it's ready for a fresh start.
+                # If it's STOPPING, we wait a few seconds for it to finish, then start it.
+                if instance.status in ["TERMINATED", "STOPPING", "PROVISIONING", "STAGING"]:
+                    print(f"INFO: Found runner '{runner['name']}' in state '{instance.status}'. Rescue/Restart initiated.")
+                    
+                    # If it's stopping, give it a moment to reach TERMINATED
+                    if instance.status == "STOPPING":
+                        print(f"INFO: Runner {runner['name']} is stopping. Waiting for it to finish...")
+                        for _ in range(5): # Wait up to 10 seconds
+                            time.sleep(2)
+                            instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
+                            if instance.status == "TERMINATED":
+                                break
+                    
                     target_instance = runner["name"]
                     target_zone = runner["zone"]
                     break
@@ -119,11 +169,10 @@ def github_webhook_handler(request):
                 print(f"WARNING: Could not check status of {runner['name']}: {e}")
 
         if not target_instance:
-            print("INFO: No static runners available (all busy). GitHub will retry or job will wait.")
+            print("INFO: No static runners available (all are currently BUSY). GitHub will retry.")
             return ("No capacity available", 200)
 
         # 4. Get a short-lived registration token from GitHub
-        github_pat = _get_secret(GCP_PROJECT, PAT_SECRET_ID)
         api_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/registration-token"
         headers = {
             "Authorization": f"token {github_pat}",
@@ -134,15 +183,29 @@ def github_webhook_handler(request):
         resp.raise_for_status()
         runner_token = resp.json().get("token")
 
-        # 5. Update Metadata with NEW Token and START Instance
-        print(f"INFO: Updating metadata and starting {target_instance}...")
+        # 5. Update Metadata/Labels and START Instance
+        print(f"INFO: Preparing {target_instance} for startup...")
         
-        # Get existing metadata to preserve startup-script
+        # A. Force-reset the runner-state label to 'booting' to fix zombie states
+        try:
+            labels_op = instance_client.set_labels(
+                project=GCP_PROJECT,
+                zone=target_zone,
+                resource=target_instance,
+                instances_set_labels_request_resource=compute_v1.InstancesSetLabelsRequest(
+                    label_fingerprint=instance_client.get(project=GCP_PROJECT, zone=target_zone, instance=target_instance).label_fingerprint,
+                    labels={"runner-state": "booting", "goog-terraform-provisioned": "true"}
+                )
+            )
+            print(f"INFO: Reset label for {target_instance} to 'booting'.")
+        except Exception as e:
+            print(f"WARNING: Failed to reset label for {target_instance}: {e}")
+
+        # B. Update Metadata with NEW Token
         instance_data = instance_client.get(project=GCP_PROJECT, zone=target_zone, instance=target_instance)
         metadata = instance_data.metadata
-        
-        # Add/Update the token and repo
         items = list(metadata.items)
+        # ... (update token logic)
         found_token = False
         found_repo = False
         for item in items:
@@ -159,14 +222,13 @@ def github_webhook_handler(request):
             items.append(compute_v1.Items(key="github_repo", value=repo_url))
             
         metadata.items = items
-        
-        # Set Metadata
         instance_client.set_metadata(project=GCP_PROJECT, zone=target_zone, instance=target_instance, metadata_resource=metadata).result()
         
-        # Start Instance
+        # C. Start Instance
+        print(f"INFO: Sending START command to {target_instance}...")
         instance_client.start(project=GCP_PROJECT, zone=target_zone, instance=target_instance).result()
         
-        print(f"INFO: Successfully started {target_instance}.")
+        print(f"INFO: Successfully kickstarted {target_instance}.")
         return ("Successfully started static runner", 200)
 
     except Exception as e:
