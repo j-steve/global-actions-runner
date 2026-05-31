@@ -19,6 +19,19 @@ PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.intern
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
 INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
 
+# --- DISK CLEANUP ---
+echo "--- Starting aggressive disk cleanup ---"
+# 1. Clear Docker logs
+find /var/lib/docker/containers/ -type f -name "*.log" -delete || true
+# 2. Prune Docker (images, containers, volumes)
+# We do this twice: once before starting the daemon (if possible) and once after if it was down
+docker system prune -af --volumes || true
+# 3. Clear runner work directory
+rm -rf /home/runner/actions-runner/_work/* || true
+# 4. Clear system logs older than 7 days
+journalctl --vacuum-time=7d || true
+echo "--- Disk cleanup complete ---"
+
 # 0. Set initial state immediately to avoid zombie labels
 gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=booting" --project="$PROJECT_ID" --quiet || true
 

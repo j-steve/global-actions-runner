@@ -250,10 +250,10 @@ resource "google_compute_instance" "persistent_runner" {
   }
 
   boot_disk {
-    auto_delete = false # Save the disk!
+    auto_delete = true
     initialize_params {
       image = "projects/${var.hub_project}/global/images/github-runner-base-v4"
-      size  = 100
+      size  = 200
       type  = "pd-ssd"
     }
   }

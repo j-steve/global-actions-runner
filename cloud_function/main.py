@@ -191,7 +191,7 @@ def github_webhook_handler(request):
             labels_op = instance_client.set_labels(
                 project=GCP_PROJECT,
                 zone=target_zone,
-                resource=target_instance,
+                instance=target_instance,
                 instances_set_labels_request_resource=compute_v1.InstancesSetLabelsRequest(
                     label_fingerprint=instance_client.get(project=GCP_PROJECT, zone=target_zone, instance=target_instance).label_fingerprint,
                     labels={"runner-state": "booting", "goog-terraform-provisioned": "true"}
