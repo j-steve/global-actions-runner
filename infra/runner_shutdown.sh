@@ -5,14 +5,12 @@ LOG_NAME="runner-shutdown"
 
 log_info() {
     local msg="$1"
-    echo "[$(date)] $msg"
-    gcloud logging write $LOG_NAME "{\"instance\": \"$INSTANCE_NAME\", \"message\": \"$msg\", \"severity\": \"INFO\"}" --payload-type=json --project="$PROJECT_ID" --quiet || true
+    echo "[$(date)] INFO: $msg"
 }
 
 log_error() {
     local msg="$1"
     echo "[$(date)] ERROR: $msg"
-    gcloud logging write $LOG_NAME "{\"instance\": \"$INSTANCE_NAME\", \"message\": \"$msg\", \"severity\": \"ERROR\"}" --payload-type=json --project="$PROJECT_ID" --quiet || true
 }
 
 # 1. Fetch necessary info
@@ -34,13 +32,6 @@ OWNER_REPO=$(echo $REPO_URL | sed 's|https://github.com/||')
 
 log_info "Preemption or shutdown detected for $INSTANCE_NAME. Cleaning up GitHub..."
 
-# 2. Mark state as preempted in labels so the provisioner knows
-if gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=preempted" --project="$PROJECT_ID" --quiet; then
-    log_info "Successfully updated instance label to preempted."
-else
-    log_error "Failed to update instance label."
-fi
-
 # 3. Find the Runner ID by name and DELETE it from GitHub
 RUNNER_ID=$(curl -s -X GET -H "Authorization: token $PAT" -H "Accept: application/vnd.github.v3+json" \
     "https://api.github.com/repos/$OWNER_REPO/actions/runners" | \
@@ -56,3 +47,4 @@ else
 fi
 
 log_info "--- Shutdown script finished ---"
+

@@ -124,11 +124,24 @@ def github_webhook_handler(request):
         target_zone = None
         
         print("INFO: Checking status of all static runners...")
-        for runner in STATIC_RUNNERS:
+        shuffled_runners = list(STATIC_RUNNERS)
+        random.shuffle(shuffled_runners)
+        for runner in shuffled_runners:
             try:
                 instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
                 label_state = instance.labels.get("runner-state", "unknown")
                 
+                # Skip if the VM is already booting or busy and currently running (or staging)
+                if instance.status in ["RUNNING", "PROVISIONING", "STAGING"] and label_state in ["booting", "busy"]:
+                    # Wait, check if it's a zombie first
+                    gh_status = gh_runner_states.get(runner["name"], "not_registered")
+                    if instance.status == "RUNNING" and gh_status != "online":
+                        # If it is RUNNING but offline in GitHub, it's a zombie, we shouldn't skip it, we should kill it!
+                        pass
+                    else:
+                        print(f"INFO: Runner '{runner['name']}' is actively {instance.status} with label '{label_state}'. Skipping to avoid collision.")
+                        continue
+
                 # --- ZOMBIE DETECTION ---
                 # If GCP says the VM is RUNNING, but GitHub says it is NOT online, it's a zombie.
                 # We force-stop it so it can be kickstarted cleanly.
@@ -138,6 +151,7 @@ def github_webhook_handler(request):
                     instance_client.stop(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"]).result()
                     # Update local status variable so the logic below sees it as available
                     instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
+                    label_state = instance.labels.get("runner-state", "unknown")
 
                 print(f"INFO: Runner '{runner['name']}' is {instance.status} with label '{label_state}'.")
                 
