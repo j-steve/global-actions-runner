@@ -292,7 +292,46 @@ resource "google_compute_instance" "persistent_runner" {
 }
 
 # ==============================================================================
-# 9. Outputs
+# 9. Pub/Sub and Event-Driven Logging Sink for Preemption/Stop Events
+# ==============================================================================
+resource "google_pubsub_topic" "runner_preempted_topic" {
+  project = var.hub_project
+  name    = "runner-preempted-events"
+}
+
+resource "google_pubsub_subscription" "runner_preempted_push_sub" {
+  project = var.hub_project
+  name    = "runner-preempted-push-sub"
+  topic   = google_pubsub_topic.runner_preempted_topic.name
+
+  push_config {
+    push_endpoint = "${google_cloudfunctions2_function.github_trigger_function.service_config[0].uri}?source=preemption"
+    
+    oidc_token {
+      service_account_email = google_service_account.gcf_trigger_sa.email
+    }
+  }
+  
+  ack_deadline_seconds = 60
+}
+
+resource "google_logging_project_sink" "runner_preempted_sink" {
+  project                = var.hub_project
+  name                   = "runner-preempted-sink"
+  destination            = "pubsub.googleapis.com/${google_pubsub_topic.runner_preempted_topic.id}"
+  filter                 = "resource.type=\"gce_instance\" AND (protoPayload.methodName:\"instances.preempted\" OR protoPayload.methodName:\"instances.stop\" OR protoPayload.methodName:\"guestTerminate\")"
+  unique_writer_identity = true
+}
+
+resource "google_pubsub_topic_iam_member" "sink_publisher" {
+  project = var.hub_project
+  topic   = google_pubsub_topic.runner_preempted_topic.name
+  role    = "roles/pubsub.publisher"
+  member  = google_logging_project_sink.runner_preempted_sink.writer_identity
+}
+
+# ==============================================================================
+# 10. Outputs
 # ==============================================================================
 output "cloud_function_trigger_url" {
   description = "The HTTPS trigger URL for the Cloud Function."

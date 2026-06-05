@@ -56,10 +56,105 @@ def _get_github_runner_states(repo_full_name, pat):
         print(f"WARNING: Failed to fetch runner states from GitHub: {e}")
         return {}
 
+def _delete_github_runner(repo_full_name, runner_name, pat):
+    """Finds a runner ID by name and deletes it from the repository."""
+    try:
+        url = f"https://api.github.com/repos/{repo_full_name}/actions/runners"
+        headers = {
+            "Authorization": f"token {pat}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        runners = resp.json().get("runners", [])
+        
+        runner_id = None
+        for r in runners:
+            if r["name"] == runner_name:
+                runner_id = r["id"]
+                break
+        
+        if runner_id:
+            print(f"INFO: Found runner ID {runner_id} for '{runner_name}'. Deleting...")
+            del_url = f"{url}/{runner_id}"
+            del_resp = requests.delete(del_url, headers=headers, timeout=10)
+            del_resp.raise_for_status()
+            print(f"INFO: Successfully deleted runner '{runner_name}' from GitHub.")
+            return True
+        else:
+            print(f"INFO: Runner '{runner_name}' not found in GitHub runner list.")
+            return False
+    except Exception as e:
+        print(f"WARNING: Failed to delete runner '{runner_name}' from GitHub: {e}")
+        return False
+
+
 def github_webhook_handler(request):
     """
     Cloud Function to manage persistent GitHub Actions runner VMs.
+    Handles both GitHub webhooks and Pub/Sub preemption/stop messages.
     """
+    # Check if this is a Pub/Sub push notification for preemption/stop events
+    is_pubsub = request.args.get("source") == "preemption"
+    
+    if is_pubsub:
+        print("INFO: Received Pub/Sub preemption/stop event. Processing...")
+        try:
+            envelope = request.get_json()
+            if not envelope or "message" not in envelope:
+                print("ERROR: Invalid Pub/Sub message envelope.")
+                return ("Bad Request", 400)
+            
+            import base64
+            pubsub_message = envelope["message"]
+            if "data" in pubsub_message:
+                data_bytes = base64.b64decode(pubsub_message["data"])
+                log_entry = json.loads(data_bytes.decode("utf-8"))
+                
+                # Extract instance name from resourceName
+                resource_name = log_entry.get("protoPayload", {}).get("resourceName", "")
+                if resource_name:
+                    instance_name = resource_name.split("/")[-1]
+                    print(f"INFO: Captured stop/preemption log for instance '{instance_name}'. Cleaning up GitHub registration...")
+                    
+                    # Get zone from log labels
+                    zone = log_entry.get("resource", {}).get("labels", {}).get("zone", "")
+                    if not zone:
+                        zone = f"{GCP_REGION}-a"
+                    
+                    # Fetch instance metadata to get repo_url
+                    try:
+                        instance_client = compute_v1.InstancesClient()
+                        instance = instance_client.get(project=GCP_PROJECT, zone=zone, instance=instance_name)
+                        repo_url = None
+                        for item in instance.metadata.items:
+                            if item.key == "github_repo":
+                                repo_url = item.value
+                                break
+                        
+                        if repo_url:
+                            repo_full_name = repo_url.replace("https://github.com/", "")
+                            print(f"INFO: Instance '{instance_name}' was registered to repo '{repo_full_name}'. De-registering...")
+                            
+                            github_pat = _get_secret(GCP_PROJECT, PAT_SECRET_ID)
+                            _delete_github_runner(repo_full_name, instance_name, github_pat)
+                            return ("Success", 200)
+                        else:
+                            print(f"WARNING: github_repo metadata key not found for '{instance_name}'.")
+                            return ("No repo metadata found", 200)
+                    except Exception as e:
+                        print(f"ERROR: Failed to retrieve GCE metadata or delete runner: {e}")
+                        return ("Internal Server Error", 500)
+                else:
+                    print("WARNING: No resourceName found in log entry.")
+                    return ("No resourceName", 200)
+            else:
+                print("WARNING: No data in Pub/Sub message.")
+                return ("No data", 200)
+        except Exception as e:
+            print(f"ERROR: Error processing Pub/Sub message: {e}")
+            return ("Internal Server Error", 500)
+
     # 1. Verify the webhook signature
     signature_header = request.headers.get("X-Hub-Signature-256")
     if not signature_header:
