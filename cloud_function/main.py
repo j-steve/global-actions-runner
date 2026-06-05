@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 import random
+from datetime import datetime, timezone
 
 from google.cloud import compute_v1
 from google.cloud import secretmanager
@@ -226,22 +227,33 @@ def github_webhook_handler(request):
                 instance = instance_client.get(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"])
                 label_state = instance.labels.get("runner-state", "unknown")
                 
+                # Check if the VM was recently started (grace period of 5 minutes)
+                is_recently_started = False
+                if instance.last_start_timestamp:
+                    try:
+                        last_start = datetime.fromisoformat(instance.last_start_timestamp.replace("Z", "+00:00"))
+                        running_seconds = (datetime.now(timezone.utc) - last_start).total_seconds()
+                        if running_seconds < 300: # 5 minutes grace period
+                            is_recently_started = True
+                    except Exception as ex:
+                        print(f"WARNING: Failed to parse lastStartTimestamp: {ex}")
+
                 # Skip if the VM is already booting or busy and currently running (or staging)
-                if instance.status in ["RUNNING", "PROVISIONING", "STAGING"] and label_state in ["booting", "busy"]:
+                if is_recently_started or (instance.status in ["RUNNING", "PROVISIONING", "STAGING"] and label_state in ["booting", "busy"]):
                     # Wait, check if it's a zombie first
                     gh_status = gh_runner_states.get(runner["name"], "not_registered")
-                    if instance.status == "RUNNING" and gh_status != "online":
+                    if instance.status == "RUNNING" and gh_status != "online" and not is_recently_started:
                         # If it is RUNNING but offline in GitHub, it's a zombie, we shouldn't skip it, we should kill it!
                         pass
                     else:
-                        print(f"INFO: Runner '{runner['name']}' is actively {instance.status} with label '{label_state}'. Skipping to avoid collision.")
+                        print(f"INFO: Runner '{runner['name']}' is actively {instance.status} with label '{label_state}' (recently started: {is_recently_started}). Skipping to avoid collision.")
                         continue
 
                 # --- ZOMBIE DETECTION ---
                 # If GCP says the VM is RUNNING, but GitHub says it is NOT online, it's a zombie.
                 # We force-stop it so it can be kickstarted cleanly.
                 gh_status = gh_runner_states.get(runner["name"], "not_registered")
-                if instance.status == "RUNNING" and gh_status != "online":
+                if instance.status == "RUNNING" and gh_status != "online" and not is_recently_started:
                     print(f"ZOMBIE DETECTED: Runner '{runner['name']}' is RUNNING in GCP but '{gh_status}' in GitHub. Stopping instance.")
                     instance_client.stop(project=GCP_PROJECT, zone=runner["zone"], instance=runner["name"]).result()
                     # Update local status variable so the logic below sees it as available
