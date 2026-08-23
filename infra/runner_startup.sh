@@ -88,10 +88,10 @@ if ! command -v bazel &>/dev/null; then
 fi
 sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet || true
 
-# Setup user local bin and symlinks
-mkdir -p /home/runner/.local/bin
-ln -sf /usr/local/bin/bazel /home/runner/.local/bin/bazel || true
-chown -R runner:runner /home/runner/.local
+# Setup user directories and ensure clean permissions (avoid symlinks to root-owned files)
+rm -f /home/runner/.local/bin/bazel /home/runner/.local/bin/bazelisk || true
+mkdir -p /home/runner/.local/bin /home/runner/.cache /home/runner/.config
+chown -R runner:runner /home/runner/.local /home/runner/.cache /home/runner/.config || true
 
 # 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
