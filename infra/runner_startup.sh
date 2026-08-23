@@ -64,6 +64,13 @@ gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --l
 RUNNER_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_token")
 REPO_URL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_repo")
 
+# If no token is set in metadata (e.g. fresh terraform create), shut down gracefully
+if [ -z "$RUNNER_TOKEN" ] || [[ "$RUNNER_TOKEN" == *"<html>"* ]] || [[ "$RUNNER_TOKEN" == *"404"* ]]; then
+    echo "--- No valid GitHub token in metadata. Shutting down cleanly to await job trigger. ---"
+    gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
+    exit 0
+fi
+
 echo "--- GITHUB RUNNER STARTING ---"
 
 # 2. Pre-fetch PAT for the shutdown script (to avoid gcloud overhead during preemption)
@@ -72,7 +79,16 @@ gcloud secrets versions access latest --secret="github-pat" --project="$PROJECT_
 chmod 600 /home/runner/.github-pat
 chown runner:runner /home/runner/.github-pat
 
-# 3. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
+# 3. Ensure global tools (Bazelisk/Bazel & Docker registry auth)
+if ! command -v bazel &>/dev/null; then
+    echo "--- Installing bazelisk to /usr/local/bin/bazel ---"
+    curl -fsSL https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64 -o /usr/local/bin/bazel || true
+    chmod +x /usr/local/bin/bazel || true
+    ln -sf /usr/local/bin/bazel /usr/local/bin/bazelisk || true
+fi
+sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet || true
+
+# 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
 #!/bin/bash
 echo "=== Post-Job Cleanup Hook Triggered ==="
@@ -93,7 +109,7 @@ export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh
 echo "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh" > /home/runner/actions-runner/.env
 chown runner:runner /home/runner/actions-runner/.env
 
-# 4. Configure
+# 5. Configure
 echo "--- Configuring ---"
 # --- ZOMBIE PREVENTION: State Cleanup ---
 # We must remove .runner_migrated (created by newer runner versions) along with 
@@ -103,7 +119,7 @@ rm -f .runner .credentials .credentials_rsaparams .runner_migrated
 
 sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace
 
-# 5. Run in background and monitor
+# 6. Run in background and monitor
 echo "--- Running ---"
 # Run the runner in the background
 sudo -E -u runner ./run.sh &
