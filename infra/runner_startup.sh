@@ -88,6 +88,11 @@ if ! command -v bazel &>/dev/null; then
 fi
 sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet || true
 
+# Setup user local bin and symlinks
+mkdir -p /home/runner/.local/bin
+ln -sf /usr/local/bin/bazel /home/runner/.local/bin/bazel || true
+chown -R runner:runner /home/runner/.local
+
 # 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
 #!/bin/bash
@@ -104,17 +109,19 @@ chown runner:runner /home/runner/cleanup_job_hook.sh
 
 cd /home/runner/actions-runner
 
-# Export hook into runner environment
+# Export environment variables into runner .env so EVERY job/step has HOME and hook defined
+export HOME=/home/runner
 export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh
-echo "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh" > /home/runner/actions-runner/.env
+cat <<ENV_EOF > /home/runner/actions-runner/.env
+HOME=/home/runner
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh
+PATH=/home/runner/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV_EOF
 chown runner:runner /home/runner/actions-runner/.env
 
 # 5. Configure
 echo "--- Configuring ---"
 # --- ZOMBIE PREVENTION: State Cleanup ---
-# We must remove .runner_migrated (created by newer runner versions) along with 
-# the standard .runner files. If these exist, config.sh will fail with 
-# "Already Configured" and the VM will hang.
 rm -f .runner .credentials .credentials_rsaparams .runner_migrated
 
 sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace
