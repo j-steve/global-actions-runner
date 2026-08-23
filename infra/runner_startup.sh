@@ -19,15 +19,43 @@ PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.intern
 INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
 INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
 
-# --- DISK CLEANUP ---
-echo "--- Starting persistent-friendly disk cleanup ---"
-# 1. Clear Docker logs
+# --- DISK HYGIENE & JANITOR ---
+echo "--- Starting persistent-friendly disk janitor ---"
+
+# 1. Clear temporary directories and runner diagnostics
+rm -rf /tmp/* /var/tmp/* /home/runner/actions-runner/_diag/* || true
+
+# 2. Clear Docker container logs
 find /var/lib/docker/containers/ -type f -name "*.log" -delete || true
-# 2. Prune only dangling layers (preserves pulled images and cache)
+
+# 3. Clean stopped containers, dangling networks, and dangling volumes from previous test runs
+docker container prune -f || true
+docker network prune -f || true
+docker volume prune -f || true
 docker image prune -f || true
-# 3. Clear system logs older than 7 days
-journalctl --vacuum-time=7d || true
-echo "--- Disk cleanup complete ---"
+
+# 4. Cap system logs to 100MB
+journalctl --vacuum-size=100M || true
+
+# 5. Dynamic Disk Threshold Check
+DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+echo "Current root disk usage: ${DISK_USAGE}%"
+
+if [ "$DISK_USAGE" -gt 65 ]; then
+    echo "Disk usage is elevated (${DISK_USAGE}% > 65%). Pruning workspace and BuildKit cache..."
+    rm -rf /home/runner/actions-runner/_work/* || true
+    docker builder prune --keep-storage=10GB -f || true
+fi
+
+DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+if [ "$DISK_USAGE" -gt 80 ]; then
+    echo "CRITICAL: Disk usage still high (${DISK_USAGE}% > 80%). Performing deep cleanup..."
+    docker system prune -af --volumes || true
+    rm -rf /home/runner/actions-runner/_work/* || true
+    rm -rf /home/runner/.cache/* || true
+fi
+
+echo "--- Disk janitor complete. Current usage: $(df -h / | awk 'NR==2 {print $5}') ---"
 
 # 0. Set initial state immediately to avoid zombie labels
 gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=booting" --project="$PROJECT_ID" --quiet || true
@@ -44,9 +72,28 @@ gcloud secrets versions access latest --secret="github-pat" --project="$PROJECT_
 chmod 600 /home/runner/.github-pat
 chown runner:runner /home/runner/.github-pat
 
+# 3. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
+cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
+#!/bin/bash
+echo "=== Post-Job Cleanup Hook Triggered ==="
+rm -rf /home/runner/actions-runner/_work/* || true
+rm -rf /tmp/* || true
+docker container prune -f || true
+docker volume prune -f || true
+docker network prune -f || true
+echo "=== Post-Job Cleanup Completed ==="
+HOOK_EOF
+chmod +x /home/runner/cleanup_job_hook.sh
+chown runner:runner /home/runner/cleanup_job_hook.sh
+
 cd /home/runner/actions-runner
 
-# 3. Configure
+# Export hook into runner environment
+export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh
+echo "ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh" > /home/runner/actions-runner/.env
+chown runner:runner /home/runner/actions-runner/.env
+
+# 4. Configure
 echo "--- Configuring ---"
 # --- ZOMBIE PREVENTION: State Cleanup ---
 # We must remove .runner_migrated (created by newer runner versions) along with 
@@ -56,17 +103,14 @@ rm -f .runner .credentials .credentials_rsaparams .runner_migrated
 
 sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace
 
-# 4. Run in background and monitor
+# 5. Run in background and monitor
 echo "--- Running ---"
 # Run the runner in the background
-sudo -u runner ./run.sh &
+sudo -E -u runner ./run.sh &
 RUNNER_PID=$!
 
 echo "--- Starting Idle Monitor ---"
 # Set custom idle timeouts per runner
-INSTANCE_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name")
-INSTANCE_ZONE=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/zone" | awk -F/ '{print $NF}')
-
 if [ "$INSTANCE_NAME" == "gh-static-runner-1" ]; then
     MAX_IDLE=60
 elif [ "$INSTANCE_NAME" == "gh-static-runner-2" ]; then
