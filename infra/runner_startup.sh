@@ -11,7 +11,7 @@ failure_handler() {
   echo "--- ERROR: Startup script failed at line $line_no with exit code $exit_code. ---"
   echo "--- Shutting down to avoid zombie state. ---"
   sleep 10 # Give serial logs a moment to flush
-  gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet || true
+  sudo poweroff || gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet || true
 }
 trap 'failure_handler $LINENO' ERR
 
@@ -67,7 +67,7 @@ REPO_URL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal
 # If no token is set in metadata (e.g. fresh terraform create), shut down gracefully
 if [ -z "$RUNNER_TOKEN" ] || [[ "$RUNNER_TOKEN" == *"<html>"* ]] || [[ "$RUNNER_TOKEN" == *"404"* ]]; then
     echo "--- No valid GitHub token in metadata. Shutting down cleanly to await job trigger. ---"
-    gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
+    sudo poweroff || gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
     exit 0
 fi
 
@@ -110,14 +110,13 @@ chown runner:runner /home/runner/cleanup_job_hook.sh
 cd /home/runner/actions-runner
 
 # Export environment variables into runner .env so EVERY job/step has HOME and hook defined
-export HOME=/home/runner
-export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh
 cat <<ENV_EOF > /home/runner/actions-runner/.env
 HOME=/home/runner
 ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/cleanup_job_hook.sh
 PATH=/home/runner/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV_EOF
 chown runner:runner /home/runner/actions-runner/.env
+export HOME=/root
 
 # 5. Configure
 echo "--- Configuring ---"
@@ -133,11 +132,11 @@ sudo -E -u runner ./run.sh &
 RUNNER_PID=$!
 
 echo "--- Starting Idle Monitor ---"
-# Set custom idle timeouts per runner
+# Set custom idle timeouts per runner (15 minutes for static runners)
 if [ "$INSTANCE_NAME" == "gh-static-runner-1" ]; then
-    MAX_IDLE=60
+    MAX_IDLE=15
 elif [ "$INSTANCE_NAME" == "gh-static-runner-2" ]; then
-    MAX_IDLE=30
+    MAX_IDLE=15
 else
     MAX_IDLE=10
 fi
@@ -152,7 +151,7 @@ update_state() {
     local new_state=$1
     if [ "$CURRENT_STATE" != "$new_state" ]; then
         echo "Updating runner-state from $CURRENT_STATE to $new_state..."
-        if gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=$new_state" --project="$PROJECT_ID" --quiet; then
+        if gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=$new_state" --project="$PROJECT_ID" --quiet 2>/dev/null; then
             CURRENT_STATE=$new_state
         else
             echo "Warning: Failed to update label to $new_state."
@@ -191,4 +190,5 @@ while true; do
 done
 
 echo "--- Shutting Down and Stopping Self ---"
-gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
+# Prefer ACPI OS poweroff so shutdown never fails on IAM / gcloud credential issues
+sudo poweroff || gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
