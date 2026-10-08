@@ -37,22 +37,28 @@ docker image prune -f || true
 # 4. Cap system logs to 100MB
 journalctl --vacuum-size=100M || true
 
-# 5. Dynamic Disk Threshold Check
+# 5. Cap Bazel disk cache
+if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
+    find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
+fi
+
+# 6. Dynamic Disk Threshold Check (calibrated for 50GB disk)
 DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
 echo "Current root disk usage: ${DISK_USAGE}%"
 
-if [ "$DISK_USAGE" -gt 65 ]; then
-    echo "Disk usage is elevated (${DISK_USAGE}% > 65%). Pruning workspace and BuildKit cache..."
+if [ "$DISK_USAGE" -gt 70 ]; then
+    echo "Disk usage is elevated (${DISK_USAGE}% > 70%). Pruning workspace, BuildKit, and older Bazel cache..."
     rm -rf /home/runner/actions-runner/_work/* || true
-    docker builder prune --keep-storage=10GB -f || true
+    docker builder prune --keep-storage=5GB -f || true
+    find /home/runner/.cache/bazel-disk-cache -type f -mtime +1 -delete 2>/dev/null || true
 fi
 
 DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
-if [ "$DISK_USAGE" -gt 80 ]; then
-    echo "CRITICAL: Disk usage still high (${DISK_USAGE}% > 80%). Performing deep cleanup..."
+if [ "$DISK_USAGE" -gt 85 ]; then
+    echo "CRITICAL: Disk usage still high (${DISK_USAGE}% > 85%). Performing deep cleanup..."
     docker system prune -af --volumes || true
     rm -rf /home/runner/actions-runner/_work/* || true
-    rm -rf /home/runner/.cache/* || true
+    rm -rf /home/runner/.cache/bazel-disk-cache/* || true
 fi
 
 echo "--- Disk janitor complete. Current usage: $(df -h / | awk 'NR==2 {print $5}') ---"
@@ -102,6 +108,16 @@ rm -rf /tmp/* || true
 docker container prune -f || true
 docker volume prune -f || true
 docker network prune -f || true
+
+# Prune stale Bazel disk cache (>3 days old)
+if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
+    find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
+    # If root disk usage exceeds 75%, prune entries older than 1 day
+    USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+    if [ "$USAGE" -gt 75 ]; then
+        find /home/runner/.cache/bazel-disk-cache -type f -mtime +1 -delete 2>/dev/null || true
+    fi
+fi
 echo "=== Post-Job Cleanup Completed ==="
 HOOK_EOF
 chmod +x /home/runner/cleanup_job_hook.sh
