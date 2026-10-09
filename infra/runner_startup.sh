@@ -123,6 +123,7 @@ rm -f /home/runner/.local/bin/bazel /home/runner/.local/bin/bazelisk || true
 mkdir -p /home/runner/.local/bin /home/runner/.cache /home/runner/.config
 chown -R runner:runner /home/runner/.local /home/runner/.config || true
 chown runner:runner /home/runner/.cache || true
+sudo -u runner bash -c "cd /home/runner && /usr/local/bin/uv python install 3.14" || true
 
 # 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
