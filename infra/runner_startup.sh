@@ -121,8 +121,29 @@ sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet |
 rm -f /home/runner/.local/bin/bazel /home/runner/.local/bin/bazelisk || true
 mkdir -p /home/runner/.local/bin /home/runner/.cache /home/runner/.config
 chown -R runner:runner /home/runner/.local /home/runner/.config || true
-chown runner:runner /home/runner/.cache || true
 sudo -u runner bash -c "cd /home/runner && /usr/local/bin/uv python install 3.14" || true
+
+# Pre-cache critical GitHub Actions into runner workspace to eliminate setup download latency
+cache_action() {
+  local owner="$1"
+  local repo="$2"
+  local ref="$3"
+  local target_dir="/home/runner/actions-runner/_work/_actions/${owner}/${repo}/${ref}"
+  local marker="${target_dir}.completed"
+
+  if [ ! -f "$marker" ]; then
+    echo "Pre-caching action ${owner}/${repo}@${ref}..."
+    mkdir -p "/home/runner/actions-runner/_work/_actions/${owner}/${repo}"
+    rm -rf "$target_dir"
+    git clone --depth=1 --branch="$ref" "https://github.com/${owner}/${repo}.git" "$target_dir" || true
+    date > "$marker"
+  fi
+}
+cache_action "actions" "checkout" "v7"
+cache_action "actions" "create-github-app-token" "v3"
+cache_action "astral-sh" "setup-uv" "v10.2.0"
+chown -R runner:runner "/home/runner/actions-runner/_work/_actions" || true
+
 
 # 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
