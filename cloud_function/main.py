@@ -238,12 +238,11 @@ def github_webhook_handler(request):
                     except Exception as ex:
                         print(f"WARNING: Failed to parse lastStartTimestamp: {ex}")
 
-                # Skip if the VM is already booting or busy and currently running (or staging)
-                if is_recently_started or (instance.status in ["RUNNING", "PROVISIONING", "STAGING"] and label_state in ["booting", "busy"]):
-                    # Wait, check if it's a zombie first
+                # Skip if the VM is already booting, provisioning, staging, or busy
+                if is_recently_started or instance.status in ["PROVISIONING", "STAGING"] or (instance.status == "RUNNING" and label_state in ["booting", "busy"]):
                     gh_status = gh_runner_states.get(runner["name"], "not_registered")
                     if instance.status == "RUNNING" and gh_status != "online" and not is_recently_started:
-                        # If it is RUNNING but offline in GitHub, it's a zombie, we shouldn't skip it, we should kill it!
+                        # Zombie VM, let zombie detection handle it
                         pass
                     else:
                         print(f"INFO: Runner '{runner['name']}' is actively {instance.status} with label '{label_state}' (recently started: {is_recently_started}). Skipping to avoid collision.")
@@ -271,7 +270,7 @@ def github_webhook_handler(request):
                 # We want to rescue runners in almost any state if they aren't active.
                 # If it's TERMINATED, it's ready for a fresh start.
                 # If it's STOPPING, we wait a few seconds for it to finish, then start it.
-                if instance.status in ["TERMINATED", "STOPPING", "PROVISIONING", "STAGING"]:
+                if instance.status in ["TERMINATED", "STOPPING"]:
                     print(f"INFO: Found runner '{runner['name']}' in state '{instance.status}'. Rescue/Restart initiated.")
                     
                     # If it's stopping, give it a moment to reach TERMINATED
@@ -293,61 +292,12 @@ def github_webhook_handler(request):
             print("INFO: No static runners available (all are currently BUSY). GitHub will retry.")
             return ("No capacity available", 200)
 
-        # 4. Get a short-lived registration token from GitHub
-        api_url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/registration-token"
-        headers = {
-            "Authorization": f"token {github_pat}",
-            "Accept": "application/vnd.github.v3+json",
-        }
-        
-        resp = requests.post(api_url, headers=headers)
-        resp.raise_for_status()
-        runner_token = resp.json().get("token")
-
-        # 5. Update Metadata/Labels and START Instance
-        print(f"INFO: Preparing {target_instance} for startup...")
-        
-        # A. Force-reset the runner-state label to 'booting' to fix zombie states
-        try:
-            labels_op = instance_client.set_labels(
-                project=GCP_PROJECT,
-                zone=target_zone,
-                instance=target_instance,
-                instances_set_labels_request_resource=compute_v1.InstancesSetLabelsRequest(
-                    label_fingerprint=instance_client.get(project=GCP_PROJECT, zone=target_zone, instance=target_instance).label_fingerprint,
-                    labels={"runner-state": "booting", "goog-terraform-provisioned": "true"}
-                )
-            )
-            print(f"INFO: Reset label for {target_instance} to 'booting'.")
-        except Exception as e:
-            print(f"WARNING: Failed to reset label for {target_instance}: {e}")
-
-        # B. Update Metadata with NEW Token
-        instance_data = instance_client.get(project=GCP_PROJECT, zone=target_zone, instance=target_instance)
-        metadata = instance_data.metadata
-        items = list(metadata.items)
-        # ... (update token logic)
-        found_token = False
-        found_repo = False
-        for item in items:
-            if item.key == "github_token":
-                item.value = runner_token
-                found_token = True
-            if item.key == "github_repo":
-                item.value = repo_url
-                found_repo = True
-        
-        if not found_token:
-            items.append(compute_v1.Items(key="github_token", value=runner_token))
-        if not found_repo:
-            items.append(compute_v1.Items(key="github_repo", value=repo_url))
-            
-        metadata.items = items
-        instance_client.set_metadata(project=GCP_PROJECT, zone=target_zone, instance=target_instance, metadata_resource=metadata).result()
-        
-        # C. Start Instance
-        print(f"INFO: Sending START command to {target_instance}...")
-        instance_client.start(project=GCP_PROJECT, zone=target_zone, instance=target_instance).result()
+        # 4. Start Instance immediately
+        # NOTE: Registration tokens are minted directly by the runner VM on boot via Secret Manager.
+        # We do NOT touch instance metadata or labels here. This eliminates GCE control-plane
+        # resource mutation locks, avoids LRO delays, and ensures immediate startup.
+        print(f"INFO: Sending START command to {target_instance} in {target_zone}...")
+        instance_client.start(project=GCP_PROJECT, zone=target_zone, instance=target_instance)
         
         print(f"INFO: Successfully kickstarted {target_instance}.")
         return ("Successfully started static runner", 200)

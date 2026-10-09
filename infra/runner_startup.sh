@@ -66,26 +66,42 @@ echo "--- Disk janitor complete. Current usage: $(df -h / | awk 'NR==2 {print $5
 # 0. Set initial state immediately to avoid zombie labels
 gcloud compute instances add-labels "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --labels="runner-state=booting" --project="$PROJECT_ID" --quiet || true
 
-# 1. Fetch metadata
-RUNNER_TOKEN=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_token")
-REPO_URL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_repo")
-
-# If no token is set in metadata (e.g. fresh terraform create), shut down gracefully
-if [ -z "$RUNNER_TOKEN" ] || [[ "$RUNNER_TOKEN" == *"<html>"* ]] || [[ "$RUNNER_TOKEN" == *"404"* ]]; then
-    echo "--- No valid GitHub token in metadata. Shutting down cleanly to await job trigger. ---"
-    sudo poweroff || gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
-    exit 0
-fi
-
 echo "--- GITHUB RUNNER STARTING ---"
 
-# 2. Pre-fetch PAT for the shutdown script (to avoid gcloud overhead during preemption)
-# The runner service account needs secretmanager.secretAccessor role.
-gcloud secrets versions access latest --secret="github-pat" --project="$PROJECT_ID" > /home/runner/.github-pat
+# 1. Fetch Repository URL (from metadata or default)
+REPO_URL=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github_repo" 2>/dev/null || true)
+if [ -z "$REPO_URL" ] || [[ "$REPO_URL" == *"<html>"* ]] || [[ "$REPO_URL" == *"404"* ]]; then
+    REPO_URL="https://github.com/j-steve/bellhop"
+fi
+OWNER_REPO=$(echo "$REPO_URL" | sed 's|https://github.com/||')
+echo "Target repository: $OWNER_REPO"
+
+# 2. Fetch GitHub PAT from Secret Manager (used for self-registration and shutdown deregistration)
+echo "--- Fetching GitHub PAT from Secret Manager ---"
+if ! gcloud secrets versions access latest --secret="github-pat" --project="$PROJECT_ID" > /home/runner/.github-pat; then
+    echo "CRITICAL: Failed to retrieve github-pat from Secret Manager. Shutting down."
+    sudo poweroff || gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
+    exit 1
+fi
 chmod 600 /home/runner/.github-pat
 chown runner:runner /home/runner/.github-pat
+PAT=$(cat /home/runner/.github-pat)
 
-# 3. Ensure global tools (Bazelisk/Bazel & Docker registry auth)
+# 3. Mint fresh short-lived GitHub Runner Registration Token directly from GitHub API
+echo "--- Minting fresh registration token from GitHub API ---"
+RUNNER_TOKEN=$(curl -s -f -X POST \
+    -H "Authorization: token $PAT" \
+    -H "Accept: application/vnd.github.v3+json" \
+    "https://api.github.com/repos/${OWNER_REPO}/actions/runners/registration-token" | jq -r .token)
+
+if [ -z "$RUNNER_TOKEN" ] || [ "$RUNNER_TOKEN" == "null" ]; then
+    echo "CRITICAL: Failed to obtain registration token from GitHub API. Shutting down."
+    sudo poweroff || gcloud compute instances stop "$INSTANCE_NAME" --zone="$INSTANCE_ZONE" --project="$PROJECT_ID" --quiet
+    exit 1
+fi
+echo "Successfully obtained registration token from GitHub API."
+
+# 4. Ensure global tools (Bazelisk/Bazel & Docker registry auth)
 if ! command -v bazel &>/dev/null; then
     echo "--- Installing bazelisk to /usr/local/bin/bazel ---"
     curl -fsSL https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64 -o /usr/local/bin/bazel || true
@@ -94,10 +110,11 @@ if ! command -v bazel &>/dev/null; then
 fi
 sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet || true
 
-# Setup user directories and ensure clean permissions (avoid symlinks to root-owned files)
+# Setup user directories and ensure clean permissions (avoid slow recursive chown on large cache tree)
 rm -f /home/runner/.local/bin/bazel /home/runner/.local/bin/bazelisk || true
 mkdir -p /home/runner/.local/bin /home/runner/.cache /home/runner/.config
-chown -R runner:runner /home/runner/.local /home/runner/.cache /home/runner/.config || true
+chown -R runner:runner /home/runner/.local /home/runner/.config || true
+chown runner:runner /home/runner/.cache || true
 
 # 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
