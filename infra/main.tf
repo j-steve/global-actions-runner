@@ -233,7 +233,7 @@ resource "google_storage_bucket_iam_member" "gemini_cli_bazel_cache_admin" {
 # 8. Persistent Runner VM Instances
 # ==============================================================================
 resource "google_compute_instance" "persistent_runner" {
-  count        = 2
+  count        = 1
   project      = var.hub_project
   name         = "gh-static-runner-${count.index + 1}"
   machine_type = "n2-standard-8"
@@ -253,7 +253,7 @@ resource "google_compute_instance" "persistent_runner" {
     auto_delete = false
     initialize_params {
       image = "projects/${var.hub_project}/global/images/github-runner-base-v4"
-      size  = 150
+      size  = 100
       type  = "pd-balanced"
     }
   }

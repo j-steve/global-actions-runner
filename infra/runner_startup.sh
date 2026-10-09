@@ -42,7 +42,7 @@ if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
     find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
 fi
 
-# 6. Dynamic Disk Threshold Check (calibrated for 150GB disk)
+# 6. Dynamic Disk Threshold Check (calibrated for 100GB disk)
 DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
 echo "Current root disk usage: ${DISK_USAGE}%"
 
@@ -159,7 +159,7 @@ if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
     find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
 fi
 
-# Dynamic High-Watermark Cleanup (calibrated for 150GB disk)
+# Dynamic High-Watermark Cleanup (calibrated for 100GB disk)
 USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
 if [ "$USAGE" -gt 80 ]; then
     echo "Disk usage elevated (${USAGE}% > 80%). Pruning older cache..."
@@ -203,8 +203,6 @@ RUNNER_PID=$!
 echo "--- Starting Idle Monitor ---"
 # Set custom idle timeouts per runner (15 minutes for static runners)
 if [ "$INSTANCE_NAME" == "gh-static-runner-1" ]; then
-    MAX_IDLE=15
-elif [ "$INSTANCE_NAME" == "gh-static-runner-2" ]; then
     MAX_IDLE=15
 else
     MAX_IDLE=10

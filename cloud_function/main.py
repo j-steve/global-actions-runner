@@ -21,7 +21,6 @@ WEBHOOK_SECRET_ID = os.environ.get("WEBHOOK_SECRET_ID", "github-webhook-secret")
 
 STATIC_RUNNERS = [
     {"name": "gh-static-runner-1", "zone": "us-central1-a"},
-    {"name": "gh-static-runner-2", "zone": "us-central1-b"},
 ]
 
 logging.basicConfig(level=logging.INFO)
