@@ -120,7 +120,7 @@ sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet |
 # Setup user directories and ensure clean permissions (avoid slow recursive chown on large cache tree)
 rm -f /home/runner/.local/bin/bazel /home/runner/.local/bin/bazelisk || true
 mkdir -p /home/runner/.local/bin /home/runner/.cache /home/runner/.config
-chown -R runner:runner /home/runner/.local /home/runner/.config || true
+chown -R runner:runner /home/runner/.local /home/runner/.cache /home/runner/.config || true
 sudo -u runner bash -c "cd /home/runner && /usr/local/bin/uv python install 3.14" || true
 
 # Ensure runner binary is up-to-date (GitHub deprecates old runner versions)
