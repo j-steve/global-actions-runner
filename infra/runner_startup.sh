@@ -108,6 +108,10 @@ if ! command -v bazel &>/dev/null; then
     chmod +x /usr/local/bin/bazel || true
     ln -sf /usr/local/bin/bazel /usr/local/bin/bazelisk || true
 fi
+if ! command -v trufflehog &>/dev/null; then
+    echo "--- Installing trufflehog to /usr/local/bin/trufflehog ---"
+    curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin || true
+fi
 sudo -u runner gcloud auth configure-docker us-central1-docker.pkg.dev --quiet || true
 
 # Setup user directories and ensure clean permissions (avoid slow recursive chown on large cache tree)
