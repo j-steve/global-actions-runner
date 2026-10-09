@@ -42,22 +42,21 @@ if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
     find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
 fi
 
-# 6. Dynamic Disk Threshold Check (calibrated for 50GB disk)
+# 6. Dynamic Disk Threshold Check (calibrated for 150GB disk)
 DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
 echo "Current root disk usage: ${DISK_USAGE}%"
 
-if [ "$DISK_USAGE" -gt 70 ]; then
-    echo "Disk usage is elevated (${DISK_USAGE}% > 70%). Pruning workspace, BuildKit, and older Bazel cache..."
-    rm -rf /home/runner/actions-runner/_work/* || true
+if [ "$DISK_USAGE" -gt 80 ]; then
+    echo "Disk usage is elevated (${DISK_USAGE}% > 80%). Pruning BuildKit and older Bazel cache..."
     docker builder prune --keep-storage=5GB -f || true
-    find /home/runner/.cache/bazel-disk-cache -type f -mtime +1 -delete 2>/dev/null || true
+    find /home/runner/.cache/bazel-disk-cache -type f -mtime +2 -delete 2>/dev/null || true
 fi
 
 DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
-if [ "$DISK_USAGE" -gt 85 ]; then
-    echo "CRITICAL: Disk usage still high (${DISK_USAGE}% > 85%). Performing deep cleanup..."
+if [ "$DISK_USAGE" -gt 90 ]; then
+    echo "CRITICAL: Disk usage still high (${DISK_USAGE}% > 90%). Performing deep cleanup..."
     docker system prune -af --volumes || true
-    rm -rf /home/runner/actions-runner/_work/* || true
+    find /home/runner/actions-runner/_work -mindepth 1 -maxdepth 1 ! -name '_actions' -exec rm -rf {} + || true
     rm -rf /home/runner/.cache/bazel-disk-cache/* || true
 fi
 
@@ -139,14 +138,17 @@ if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
     find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
 fi
 
-# Dynamic High-Watermark Cleanup (if disk usage > 75%)
+# Dynamic High-Watermark Cleanup (calibrated for 150GB disk)
 USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
-if [ "$USAGE" -gt 75 ]; then
-    echo "Disk usage elevated (${USAGE}% > 75%). Pruning workspace and older cache..."
-    rm -rf /home/runner/actions-runner/_work/* || true
+if [ "$USAGE" -gt 80 ]; then
+    echo "Disk usage elevated (${USAGE}% > 80%). Pruning older cache..."
     if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
-        find /home/runner/.cache/bazel-disk-cache -type f -mtime +1 -delete 2>/dev/null || true
+        find /home/runner/.cache/bazel-disk-cache -type f -mtime +2 -delete 2>/dev/null || true
     fi
+fi
+if [ "$USAGE" -gt 90 ]; then
+    echo "CRITICAL: Disk usage very high (${USAGE}% > 90%). Pruning workspace repos while preserving action cache..."
+    find /home/runner/actions-runner/_work -mindepth 1 -maxdepth 1 ! -name '_actions' -exec rm -rf {} + || true
 fi
 echo "=== Post-Job Cleanup Completed ==="
 HOOK_EOF
