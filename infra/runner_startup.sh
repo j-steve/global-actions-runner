@@ -123,6 +123,19 @@ mkdir -p /home/runner/.local/bin /home/runner/.cache /home/runner/.config
 chown -R runner:runner /home/runner/.local /home/runner/.config || true
 sudo -u runner bash -c "cd /home/runner && /usr/local/bin/uv python install 3.14" || true
 
+# Ensure runner binary is up-to-date (GitHub deprecates old runner versions)
+REQUIRED_RUNNER_VERSION="2.338.0"
+CURRENT_RUNNER_VERSION=$(/home/runner/actions-runner/bin/Runner.Listener --version 2>/dev/null || echo "0.0.0")
+if [ "$CURRENT_RUNNER_VERSION" != "$REQUIRED_RUNNER_VERSION" ]; then
+    echo "--- Upgrading runner binary from $CURRENT_RUNNER_VERSION to $REQUIRED_RUNNER_VERSION ---"
+    sudo -u runner bash -c "
+      cd /home/runner/actions-runner && \
+      curl -fsSL https://github.com/actions/runner/releases/download/v${REQUIRED_RUNNER_VERSION}/actions-runner-linux-x64-${REQUIRED_RUNNER_VERSION}.tar.gz -o runner.tar.gz && \
+      tar xzf runner.tar.gz && \
+      rm -f runner.tar.gz
+    " || true
+fi
+
 # Pre-cache critical GitHub Actions into runner workspace to eliminate setup download latency
 cache_action() {
   local owner="$1"
