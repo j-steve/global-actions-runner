@@ -129,7 +129,6 @@ sudo -u runner bash -c "cd /home/runner && /usr/local/bin/uv python install 3.14
 cat <<'HOOK_EOF' > /home/runner/cleanup_job_hook.sh
 #!/bin/bash
 echo "=== Post-Job Cleanup Hook Triggered ==="
-rm -rf /home/runner/actions-runner/_work/* || true
 rm -rf /tmp/* || true
 docker container prune -f || true
 docker volume prune -f || true
@@ -138,9 +137,14 @@ docker network prune -f || true
 # Prune stale Bazel disk cache (>3 days old)
 if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
     find /home/runner/.cache/bazel-disk-cache -type f -mtime +3 -delete 2>/dev/null || true
-    # If root disk usage exceeds 75%, prune entries older than 1 day
-    USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
-    if [ "$USAGE" -gt 75 ]; then
+fi
+
+# Dynamic High-Watermark Cleanup (if disk usage > 75%)
+USAGE=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+if [ "$USAGE" -gt 75 ]; then
+    echo "Disk usage elevated (${USAGE}% > 75%). Pruning workspace and older cache..."
+    rm -rf /home/runner/actions-runner/_work/* || true
+    if [ -d "/home/runner/.cache/bazel-disk-cache" ]; then
         find /home/runner/.cache/bazel-disk-cache -type f -mtime +1 -delete 2>/dev/null || true
     fi
 fi
