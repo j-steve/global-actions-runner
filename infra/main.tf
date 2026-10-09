@@ -236,7 +236,7 @@ resource "google_compute_instance" "persistent_runner" {
   count        = 2
   project      = var.hub_project
   name         = "gh-static-runner-${count.index + 1}"
-  machine_type = "n2-standard-4"
+  machine_type = "n2-standard-8"
   zone         = "us-central1-${count.index == 0 ? "a" : "b"}"
 
   # Allow stopping for machine type or metadata changes
