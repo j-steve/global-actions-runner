@@ -142,7 +142,7 @@ cache_action() {
 cache_action "actions" "checkout" "v7"
 cache_action "actions" "create-github-app-token" "v3"
 cache_action "astral-sh" "setup-uv" "v10.2.0"
-chown -R runner:runner "/home/runner/actions-runner/_work/_actions" || true
+chown -R runner:runner "/home/runner/actions-runner/_work" || true
 
 
 # 4. Setup Post-Job Cleanup Hook (Runs immediately when any job completes)
@@ -192,7 +192,7 @@ echo "--- Configuring ---"
 # --- ZOMBIE PREVENTION: State Cleanup ---
 rm -f .runner .credentials .credentials_rsaparams .runner_migrated
 
-sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace
+sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace --disableupdate
 
 # 6. Run in background and monitor
 echo "--- Running ---"
