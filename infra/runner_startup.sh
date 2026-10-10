@@ -204,6 +204,8 @@ export HOME=/root
 echo "--- Configuring ---"
 # --- ZOMBIE PREVENTION: State Cleanup ---
 rm -f .runner .credentials .credentials_rsaparams .runner_migrated
+mkdir -p /home/runner/actions-runner/_diag /home/runner/actions-runner/_work
+chown -R runner:runner /home/runner/actions-runner /home/runner/.cache
 
 sudo -u runner ./config.sh --url "${REPO_URL}" --token "${RUNNER_TOKEN}" --unattended --labels gcp-spot-runner --replace --disableupdate
 
