@@ -216,8 +216,8 @@ sudo -E -u runner ./run.sh &
 RUNNER_PID=$!
 
 echo "--- Starting Idle Monitor ---"
-# Set idle timeout to 5 minutes to minimize Spot VM idle runtime costs
-MAX_IDLE=5
+# Set idle timeout to 20 minutes to keep runner warm during active dev sessions
+MAX_IDLE=20
 
 echo "Idle timeout set to ${MAX_IDLE}m for ${INSTANCE_NAME}"
 
